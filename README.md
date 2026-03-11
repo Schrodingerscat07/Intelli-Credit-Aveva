@@ -75,7 +75,7 @@ A **LangGraph state machine** that orchestrates the full optimization lifecycle:
 
 ### Node 1 — Data Router & Memory Retrieval
 - Receives simulated live telemetry
-- Queries **Qdrant** in-memory vector DB (SentenceTransformer embeddings) for the nearest matching Golden Signature baseline
+- Queries **Qdrant** in-memory vector DB (L2-normalized numerical vectors) for the nearest matching Golden Signature baseline
 
 ### Node 2 — Proxy Caller (The Brain)
 - Feeds context features into the Phase 1 PyTorch Optimization Proxy
@@ -115,7 +115,7 @@ Strictly typed via `ManufacturingState(BaseModel)`:
 ```bash
 # Install dependencies
 pip install pandas numpy scikit-learn xgboost torch openpyxl
-pip install langgraph qdrant-client langchain-mcp-adapters openlayer sentence-transformers
+pip install langgraph qdrant-client langchain-mcp-adapters openlayer
 
 # Phase 1: Core Engine
 python -X utf8 data_layer.py            # Data ingestion + augmentation
@@ -140,7 +140,7 @@ python -X utf8 orchestration_layer.py   # LangGraph + Qdrant + HITL workflow
 | Neural Proxy | PyTorch (AdamW, CosineAnnealing) |
 | Constraint Enforcement | Deterministic Repair Layer (`torch.clamp` + alternating projections) |
 | Orchestration | LangGraph (Pydantic state machine) |
-| Vector Memory | Qdrant (in-memory, SentenceTransformer embeddings) |
+| Vector Memory | Qdrant (in-memory, L2-normalized numerical vectors) |
 | Secure Execution | Model Context Protocol (langchain-mcp-adapters) |
 | Observability | LangSmith (`@traceable`) + Openlayer |
 | HITL Workflow | LangGraph `interrupt()` + `Command(resume=...)` |
