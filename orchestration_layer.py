@@ -53,8 +53,9 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-# ── Sentence Transformers (Embedding) ──────────────────────────────────
-from sentence_transformers import SentenceTransformer
+# NOTE: SentenceTransformer REMOVED -- text embeddings destroy
+# mathematical relationships in numerical telemetry data.
+# We use raw L2-normalized numerical vectors directly in Qdrant.
 
 # ── Phase 1 Imports ────────────────────────────────────────────────────
 from data_layer import build_training_dataset, DATA_DIR, SENSOR_COLS
@@ -82,8 +83,8 @@ log = logging.getLogger("orchestration")
 # CONSTANTS
 # =====================================================================
 QDRANT_COLLECTION = "golden_signatures"
-EMBEDDING_MODEL   = "all-MiniLM-L6-v2"   # fast, 384-d embeddings
-EMBEDDING_DIM     = 384
+# EMBEDDING_DIM is set dynamically from the number of context columns
+# at initialization time, not hardcoded for a text model.
 
 # Simulated physical constraints for the MCP tool
 MCP_TOOL_NAME = "execute_machine_parameters"
@@ -178,46 +179,68 @@ class ManufacturingState(BaseModel):
 
 
 # =====================================================================
-# 2. VECTOR MEMORY  --  Qdrant Manager
+# 2. VECTOR MEMORY  --  Qdrant Manager (Raw Numerical Vectors)
 # =====================================================================
 class VectorMemory:
     """Manages the Qdrant in-memory vector database for Golden Signature
     retrieval and continuous learning updates.
 
-    Uses SentenceTransformer to embed numeric feature vectors into a
-    semantic space for approximate nearest-neighbor search.
+    CRITICAL DESIGN DECISION:
+      We use raw L2-normalized numerical feature vectors directly as
+      dense vector embeddings in Qdrant, NOT text-based transformers.
+      This preserves the mathematical distance relationships in our
+      factory telemetry (e.g., 45 deg C is close to 46 deg C), which
+      would be destroyed by stringifying numbers and passing them
+      through a language model.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, context_cols: List[str]) -> None:
         log.info("Initializing Qdrant in-memory vector database...")
         self.client = QdrantClient(":memory:")  # no external server needed
-        self.embedder = SentenceTransformer(EMBEDDING_MODEL)
+        self.context_cols = context_cols
+        self.vector_dim = len(context_cols)
+        self.scaler = StandardScaler()  # fitted during ingestion
+        self._scaler_fitted = False
 
-        # Create collection
+        # Create collection with dimension = number of context features
         self.client.create_collection(
             collection_name=QDRANT_COLLECTION,
             vectors_config=VectorParams(
-                size=EMBEDDING_DIM,
+                size=self.vector_dim,
                 distance=Distance.COSINE,
             ),
         )
         log.info(
-            "Qdrant collection '%s' created (dim=%d, cosine)",
-            QDRANT_COLLECTION, EMBEDDING_DIM,
+            "Qdrant collection '%s' created (dim=%d, cosine, raw numerical)",
+            QDRANT_COLLECTION, self.vector_dim,
         )
 
-    def _feature_to_text(self, features: Dict[str, float]) -> str:
-        """Convert a numeric feature dict to a text string for embedding."""
-        parts = [f"{k}={v:.4f}" for k, v in sorted(features.items())]
-        return " ".join(parts)
+    def _to_vector(self, features: Dict[str, Any]) -> List[float]:
+        """Convert a feature dict to an L2-normalized numerical vector.
 
-    def _embed(self, text: str) -> List[float]:
-        """Embed a text string using SentenceTransformer."""
-        vec = self.embedder.encode(text, convert_to_numpy=True)
-        return vec.tolist()
+        Uses the same column ordering and StandardScaler as the ingested
+        Golden Signatures so that cosine similarity is meaningful.
+        """
+        raw = np.array(
+            [float(features.get(c, 0.0)) for c in self.context_cols],
+            dtype=np.float64,
+        ).reshape(1, -1)
+
+        # Scale using the fitted scaler
+        if self._scaler_fitted:
+            scaled = self.scaler.transform(raw).flatten()
+        else:
+            scaled = raw.flatten()
+
+        # L2 normalize for cosine similarity
+        norm = np.linalg.norm(scaled)
+        if norm > 1e-12:
+            scaled = scaled / norm
+
+        return scaled.tolist()
 
     def ingest_golden_signatures(self, golden_df: pd.DataFrame) -> int:
-        """Bulk-load Golden Signatures into Qdrant.
+        """Bulk-load Golden Signatures into Qdrant using raw numerical vectors.
 
         Parameters
         ----------
@@ -229,22 +252,31 @@ class VectorMemory:
         int
             Number of points ingested.
         """
+        # ── Fit the StandardScaler on ALL context features ──────────
+        available_ctx = [c for c in self.context_cols if c in golden_df.columns]
+        X_ctx = golden_df[available_ctx].fillna(0.0).values.astype(np.float64)
+        self.scaler.fit(X_ctx)
+        self._scaler_fitted = True
+        log.info("  Qdrant scaler fitted on %d context features", len(available_ctx))
+
+        # ── Build points with raw numerical vectors ─────────────────
         points: List[PointStruct] = []
         decision_cols = [c for c in DECISION_VARS if c in golden_df.columns]
-        context_cols = [c for c in golden_df.columns if c.startswith("ctx_")]
         pred_cols = [c for c in golden_df.columns if c.startswith("pred_")]
 
         for idx, row in golden_df.iterrows():
-            # Build feature text from context columns for embedding
-            feature_dict = {c: float(row[c]) for c in context_cols[:20]}
-            text = self._feature_to_text(feature_dict)
-            vector = self._embed(text)
+            # Build raw numerical vector from context columns
+            feature_dict = {c: float(row.get(c, 0.0)) for c in self.context_cols}
+            vector = self._to_vector(feature_dict)
 
-            # Payload = decision vars + predictions
+            # Payload = decision vars + predictions (for retrieval)
             payload: Dict[str, Any] = {}
             for c in decision_cols:
                 payload[c] = float(row[c])
             for c in pred_cols:
+                payload[c] = float(row[c])
+            # Also store context features in payload for proxy caller
+            for c in available_ctx:
                 payload[c] = float(row[c])
             payload["source"] = "nsga2_offline"
 
@@ -263,20 +295,21 @@ class VectorMemory:
             )
 
         log.info(
-            "Ingested %d Golden Signatures into Qdrant '%s'",
+            "Ingested %d Golden Signatures into Qdrant '%s' (numerical vectors)",
             len(points), QDRANT_COLLECTION,
         )
         return len(points)
 
     def query_nearest(
-        self, telemetry: Dict[str, float], top_k: int = 1
+        self, telemetry: Dict[str, Any], top_k: int = 1
     ) -> Dict[str, Any]:
-        """Find the closest historical Golden Signature to incoming telemetry.
+        """Find the closest historical Golden Signature using numerical
+        cosine similarity on the raw feature vectors.
 
         Parameters
         ----------
-        telemetry : Dict[str, float]
-            Current telemetry feature dict.
+        telemetry : Dict[str, Any]
+            Current telemetry feature dict (same keys as context_cols).
         top_k : int
             Number of nearest neighbors to retrieve.
 
@@ -285,8 +318,7 @@ class VectorMemory:
         Dict[str, Any]
             Best matching Golden Signature payload + similarity score.
         """
-        text = self._feature_to_text(telemetry)
-        vector = self._embed(text)
+        vector = self._to_vector(telemetry)
 
         results = self.client.query_points(
             collection_name=QDRANT_COLLECTION,
@@ -304,18 +336,18 @@ class VectorMemory:
         return {"payload": {}, "score": 0.0, "id": None}
 
     def upsert_new_signature(
-        self, features: Dict[str, float], settings: Dict[str, float],
-        outcome: Dict[str, float],
+        self, features: Dict[str, Any], settings: Dict[str, Any],
+        outcome: Dict[str, Any],
     ) -> int:
         """Add a new learned Golden Signature to Qdrant (continuous learning).
 
         Parameters
         ----------
-        features : Dict[str, float]
+        features : Dict[str, Any]
             Context features that led to the good outcome.
-        settings : Dict[str, float]
+        settings : Dict[str, Any]
             The machine settings that were applied.
-        outcome : Dict[str, float]
+        outcome : Dict[str, Any]
             The simulated/actual production outcome.
 
         Returns
@@ -323,8 +355,7 @@ class VectorMemory:
         int
             The point ID of the new entry.
         """
-        text = self._feature_to_text(features)
-        vector = self._embed(text)
+        vector = self._to_vector(features)
 
         payload = {**settings, **{f"pred_{k}": v for k, v in outcome.items()}}
         payload["source"] = "continuous_learning"
@@ -919,8 +950,8 @@ def initialize_system(
 
     log.info("  Proxy training complete")
 
-    # ── Initialize Qdrant ───────────────────────────────────────────
-    _vector_memory = VectorMemory()
+    # ── Initialize Qdrant with same context columns ─────────────────
+    _vector_memory = VectorMemory(context_cols=context_cols)
     _vector_memory.ingest_golden_signatures(golden_df)
 
     # ── Initialize MCP executor & Openlayer ─────────────────────────
@@ -950,15 +981,17 @@ if __name__ == "__main__":
     print(f"  HITL interrupt at: hitl_gate (uses interrupt() + Command resume)")
 
     # ── Simulate incoming telemetry ─────────────────────────────────
+    # Use ACTUAL context column names from Golden Signatures so the
+    # raw numerical vector query matches the Qdrant collection schema.
+    golden_for_sim = pd.read_csv(
+        os.path.join(DATA_DIR, "golden_signatures.csv"), nrows=1
+    )
+    sim_context_cols = [c for c in golden_for_sim.columns if c.startswith("ctx_")]
+    # Take the first row as simulated "live" telemetry with slight perturbation
+    rng = np.random.default_rng(42)
     simulated_telemetry = {
-        "Temperature_C": 45.2,
-        "Pressure_Bar": 3.5,
-        "Humidity_Percent": 62.1,
-        "Motor_Speed_RPM": 1200.0,
-        "Compression_Force_kN": 15.3,
-        "Flow_Rate_LPM": 8.7,
-        "Power_Consumption_kW": 22.5,
-        "Vibration_mm_s": 3.1,
+        c: float(golden_for_sim[c].iloc[0]) * (1 + rng.normal(0, 0.05))
+        for c in sim_context_cols
     }
 
     initial_state = ManufacturingState(
