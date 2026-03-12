@@ -1,12 +1,26 @@
-import React from 'react'
-import HitlDashboard from './HitlDashboard'
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import Layout from './components/Layout';
+import Dashboard from './pages/Dashboard';
+import Optimization from './pages/Optimization';
+import Explainability from './pages/Explainability';
+import Execution from './pages/Execution';
 
 function App() {
   return (
-    <div className="App">
-      <HitlDashboard />
-    </div>
-  )
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Layout />}>
+          <Route index element={<Dashboard />} />
+          <Route path="optimization" element={<Optimization />} />
+          <Route path="explainability" element={<Explainability />} />
+          <Route path="execution" element={<Execution />} />
+          {/* Fallback route */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
 }
 
-export default App
+export default App;
