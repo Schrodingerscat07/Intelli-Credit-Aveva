@@ -30,6 +30,7 @@ app.add_middleware(
 # Global variables to hold graph instances
 compiled_graph = None
 checkpointer = None
+latest_batch_id = None
 
 class TelemetryPayload(BaseModel):
     batch_id: str
@@ -39,6 +40,12 @@ class DecisionPayload(BaseModel):
     batch_id: str
     approved: bool
     feedback: Optional[str] = ""
+
+class PriorityPayload(BaseModel):
+    batch_id: Optional[str] = None
+    priority_value: float
+    priority_type: str = "yield_vs_energy"
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -63,12 +70,20 @@ def run_graph_background(batch_id: str, telemetry: Dict[str, float]):
 @app.post("/api/trigger_batch")
 async def trigger_batch(payload: TelemetryPayload, background_tasks: BackgroundTasks):
     """Initiates the LangGraph optimization workflow."""
+    global latest_batch_id
+    latest_batch_id = payload.batch_id
     background_tasks.add_task(run_graph_background, payload.batch_id, payload.telemetry)
     return {"status": "started", "batch_id": payload.batch_id}
 
 @app.get("/api/graph_state")
 async def get_graph_state(batch_id: str):
     """Polls the current execution state of the graph."""
+    global latest_batch_id
+    if batch_id == "LATEST_KNOWN":
+        if not latest_batch_id:
+            return {"status": "not_found", "message": "No active batch"}
+        batch_id = latest_batch_id
+
     config = {"configurable": {"thread_id": batch_id}}
     state_snapshot = compiled_graph.get_state(config)
     
@@ -119,8 +134,10 @@ async def new_batch(background_tasks: BackgroundTasks):
     This allows the frontend dashboard to restart the full workflow cycle 
     without needing to run trigger_test.py from the command line.
     """
+    global latest_batch_id
     # Generate a unique batch ID
     batch_id = f"BATCH-{uuid.uuid4().hex[:6].upper()}"
+    latest_batch_id = batch_id
     
     # Build realistic 284-dimensional mock telemetry
     mock_telemetry = {
@@ -144,6 +161,14 @@ async def new_batch(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_graph_background, batch_id, mock_telemetry)
     print(f"🆕 New batch triggered from dashboard: {batch_id}")
     return {"status": "started", "batch_id": batch_id}
+
+@app.post("/api/update_priorities")
+async def update_priorities(payload: PriorityPayload):
+    """Endpoint for updating optimization priorities from the frontend slider."""
+    print(f"🎚️ Priority updated: {payload.priority_type} = {payload.priority_value}")
+    # In a full implementation, this might update a global setting or feed into the next graph run
+    return {"status": "success", "priority_value": payload.priority_value}
+
 
 if __name__ == "__main__":
     uvicorn.run("api_gateway:app", host="127.0.0.1", port=8000, reload=True)
