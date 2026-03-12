@@ -71,14 +71,48 @@ export default function HitlDashboard() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [gameState, setGameState] = useState(null);
   const [error, setError] = useState(null);
+  const [batchId, setBatchId] = useState(null);           // Dynamic batch ID
+  const [isStarting, setIsStarting] = useState(false);    // Loading state for new batch button
   
-  // Hardcoded for demo; typically fetched or context-driven
-  const batchId = "TEST-BATCH-001";
   const approveBtnRef = useMagnetic();
   const rejectBtnRef = useMagnetic();
+  const newBatchBtnRef = useMagnetic();
 
-  // Polling LangGraph state via FastAPI
+  // ────────────────────────────────────────────────────────────────
+  // TRIGGER A NEW BATCH from the Dashboard
+  // ────────────────────────────────────────────────────────────────
+  const handleNewBatch = async () => {
+    setIsStarting(true);
+    setGameState(null);       // Reset the dashboard display
+    setError(null);
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/new_batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "Failed to start new batch");
+      }
+
+      console.log("New batch started:", result);
+      setBatchId(result.batch_id);    // Update the batch ID to poll
+    } catch (err) {
+      console.error("Failed to trigger new batch:", err);
+      setError("Failed to start new batch: " + err.message);
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // POLL LANGGRAPH STATE — only polls when we have a batchId
+  // ────────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!batchId) return;   // Don't poll until a batch has been triggered
+
     let active = true;
     const pollBackend = async () => {
       try {
@@ -117,6 +151,12 @@ export default function HitlDashboard() {
   const theoreticEnergy = (22.5 - (priority - 50) * 0.1).toFixed(1);
 
   // ────────────────────────────────────────────────────────────────
+  // Determine the workflow phase for the UI
+  // ────────────────────────────────────────────────────────────────
+  const isComplete = gameState?.status === "executed" || gameState?.status === "rejected";
+  const isWaitingForBatch = !batchId;
+
+  // ────────────────────────────────────────────────────────────────
   // API HOOKS FOR PHASE 2 LANGGRAPH BACKEND
   // ────────────────────────────────────────────────────────────────
   const handleDecision = async (approved) => {
@@ -150,6 +190,37 @@ export default function HitlDashboard() {
       setIsSubmitting(false);
     }
   };
+
+  // ────────────────────────────────────────────────────────────────
+  // INITIAL STATE — no batch yet, show welcome + start button
+  // ────────────────────────────────────────────────────────────────
+  if (isWaitingForBatch) {
+    return (
+      <div className="dashboard-container" style={{ justifyContent: 'center', alignItems: 'center' }}>
+        <GlowCard className="welcome-card">
+          <h1 style={{ margin: 0, fontSize: '2rem', letterSpacing: '1px' }}>
+            Intelli-Credit — Industrial AI Optimizer
+          </h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem', marginTop: '1rem', lineHeight: 1.6 }}>
+            This dashboard allows you to trigger an AI optimization batch, review the proposed machine settings,
+            and approve or reject them before they are sent to the factory floor.
+          </p>
+          <button
+            ref={newBatchBtnRef}
+            className="magnetic-btn btn-new-batch"
+            onClick={handleNewBatch}
+            disabled={isStarting}
+            style={{ marginTop: '2rem' }}
+          >
+            <span className="magnetic-content">
+              {isStarting ? "Initializing..." : "▶  Start New Optimization Batch"}
+            </span>
+          </button>
+          {error && <p style={{ color: 'var(--accent-orange)', marginTop: '1rem' }}>{error}</p>}
+        </GlowCard>
+      </div>
+    );
+  }
 
   return (
     <div className="dashboard-container">
@@ -245,7 +316,7 @@ export default function HitlDashboard() {
             Optimization Rationale
           </h3>
           <p style={{ fontSize: '1.1rem', lineHeight: '1.6', marginBottom: '1.5rem' }}>
-            Based on Golden Signature <span style={{ fontFamily: 'var(--font-mono)' }}>#4021</span>: 
+            Based on Golden Signature <span style={{ fontFamily: 'var(--font-mono)' }}>#{batchId}</span>: 
             Reducing Machine Speed by <b>5 RPM</b> and increasing Compression Force by <b>1.2 kN</b> 
             shifts the process into a more efficient Pareto frontier, saving <b>~10kW</b> with a negligible 
             effect on friability.
@@ -272,7 +343,7 @@ export default function HitlDashboard() {
         <GlowCard className="execution-gate">
           <div>
             <h2 style={{ margin: 0, letterSpacing: '1px' }}>
-               {gameState?.status === "executed" ? "Execution Complete" : "Pending AI Recommendation"}
+               {isComplete ? "Execution Complete" : "Pending AI Recommendation"}
             </h2>
             <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
               Batch ID: {batchId} 
@@ -299,10 +370,30 @@ export default function HitlDashboard() {
             </div>
           </div>
 
-          {gameState?.status === "executed" ? (
-             <div style={{color: 'lime', fontSize: '1.2rem', padding: '1rem'}}>
-               Settings Applied. Quality Delta: {gameState.quality_delta > 0 ? "+" : ""}{gameState.quality_delta.toFixed(4)}
-             </div>
+          {isComplete ? (
+            <div className="completion-section">
+              <div style={{color: 'lime', fontSize: '1.2rem', padding: '1rem'}}>
+                {gameState?.status === "executed" 
+                  ? <>Settings Applied. Quality Delta: {gameState.quality_delta > 0 ? "+" : ""}{gameState.quality_delta.toFixed(4)}</>
+                  : <>Batch rejected. Settings were not applied.</>
+                }
+              </div>
+              {gameState?.qdrant_updated && (
+                <div style={{color: 'var(--accent-cyan)', fontSize: '0.95rem', marginBottom: '1rem'}}>
+                  ✓ Qdrant vector memory updated with new Golden Signature (continuous learning)
+                </div>
+              )}
+              <button
+                ref={newBatchBtnRef}
+                className="magnetic-btn btn-new-batch"
+                onClick={handleNewBatch}
+                disabled={isStarting}
+              >
+                <span className="magnetic-content">
+                  {isStarting ? "Initializing..." : "▶  Run New Batch"}
+                </span>
+              </button>
+            </div>
           ) : (
             <div className="action-buttons">
               <button 

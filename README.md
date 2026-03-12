@@ -1,152 +1,67 @@
 # Intelli-Credit-Aveva — Industrial AI Optimization Engine
 
-> **Hackathon Prototype** — IITH x Aveva  
-> Balancing conflicting manufacturing targets: **maximizing yield/quality** while **minimizing energy consumption** using a 5-layer modular AI architecture.
+> **Hackathon Prototype** — IITH x Aveva
+> A full-stack AI platform built to solve the ultimate manufacturing dilemma: maximizing product quality and yield while strictly minimizing energy consumption and carbon emissions.
 
 ---
 
-## Architecture Overview
+## 🏭 The Problem: Energy vs. Quality Trade-off
 
-```
-+==================================================================+
-|                    PHASE 1: THE CORE ENGINE                       |
-|                                                                   |
-|  +-------------+    +------------------+    +------------------+  |
-|  | DATA LAYER  |--->| OFFLINE OPTIMIZER |--->|   MODEL LAYER    |  |
-|  |             |    |                  |    |                  |  |
-|  | Ingestion   |    | XGBoost Surrogate|    | PyTorch Proxy    |  |
-|  | Validation  |    | NSGA-II Pareto   |    | + Repair Layer   |  |
-|  | Feature Eng |    | Golden Signatures|    | (< 1ms inference)|  |
-|  +-------------+    +------------------+    +------------------+  |
-+==================================================================+
-                              |
-                              v
-+==================================================================+
-|                PHASE 2: AGENTIC ORCHESTRATION                     |
-|                                                                   |
-|  +------------+    +--------------+    +------+    +-----------+  |
-|  | Data       |--->| Proxy Caller |--->| HITL |--->| Execution |  |
-|  | Router     |    |   (Brain)    |    | Gate |    |   Node    |  |
-|  +-----+------+    +------+-------+    +------+    +-----+-----+  |
-|        |                  |                              |        |
-|        v                  v                              v        |
-|    [Qdrant]        [LangSmith +              [MCP Tool + Qdrant   |
-|     Vector          Openlayer                 Continuous          |
-|     Memory          Tracing]                  Learning]           |
-+==================================================================+
-```
+Imagine a massive factory producing millions of medicine tablets. The machines have hundreds of dials and settings (like temperature, pressure, rotation speed). The factory managers are playing a constant game of tug-of-war:
+
+1. They want to make the **best quality tablets** as fast as possible to maximize yield.
+2. They want to use the **least amount of electricity** possible to hit Carbon footprint targets and save money.
+
+Usually, if you crank up the machine speed to make more tablets, you drastically increase power usage or produce damaged (friable) tablets. Finding the "perfect balance" (the optimal machine settings) given the live telemetry of the factory is nearly impossible for a human to do in real-time.
 
 ---
 
-## Phase 1: The Core Engine
+## 🤖 Our Solution: The AI Supervisor
 
-### Layer 1 — Data Layer (`data_layer.py`)
-- **Ingestion & Validation**: Loads `.xlsx` telemetry + production summaries with automated null handling, IQR-based anomaly detection, and physical sensor range checks.
-- **Phase-Aware Feature Engineering**: Slices telemetry by 8 manufacturing phases. Extracts per-phase:
-  - Statistical aggregates (mean, std, min, max)
-  - **Thermal Ramp Rate** — first-order derivative of Temperature over Time
-  - **Power AUC** — trapezoidal integral of Power Consumption
-  - **Vibration AUC** — trapezoidal integral of Vibration
-- **Gaussian-Noise Data Augmentation**: Synthesizes varied telemetry features (sigma = 8%) correlated with production settings to prevent **feature collapse** from single-batch telemetry.
-- **Output**: 60-row x 295-column merged training dataset.
+Our project is an **AI-driven supervisor** that finds this perfect balance automatically.
 
-### Layer 2 — Offline Optimizer (`offline_optimizer.py`)
-- **XGBoost Surrogate Model**: Multi-output regressor mapping 7 machine settings + 280 telemetry features to quality targets + energy.
-- **NSGA-II Genetic Algorithm** (custom implementation):
-  - Simulated Binary Crossover (SBX, eta=20), Polynomial Mutation (eta=20)
-  - Constraint-aware Non-Dominated Sorting + Crowding Distance
-- **Objectives**: Maximize `Tablet_Weight`, Minimize `Power_Consumption_kW`
-- **Constraints**: `Friability in [0.1, 1.0]`, `Hardness in [4, 10]`
-- **Output**: 4,000 Pareto-optimal "Golden Signatures" across 20 historical contexts.
-
-### Layer 3 — Model Layer (`model_layer.py`)
-- **Optimization Proxy**: 115K-parameter feed-forward neural network (BatchNorm, GELU, Dropout x3) trained on Golden Signatures.
-- **The Repair Layer** (Critical Innovation):
-  - **Box Constraints**: `torch.clamp()` projects outputs into physically feasible bounds
-  - **Coupling Constraints**: Alternating projections enforce interactive physics (e.g., high compression force de-rates max speed)
-  - Fully differentiable — gradients flow through during backpropagation
-- **Inference**: < 1ms per batch, 100% constraint adherence verified.
+1. **It learns from history:** It ingests massive amounts of past factory data and simulates millions of scenarios to locate the absolute best machine "recipes" (we call them Golden Signatures), where energy is lowest but quality remains high.
+2. **It operates in real-time:** It monitors live machines and uses a lightning-fast PyTorch neural network to dynamically suggest new settings.
+3. **It respects human authority:** Before any machine dials are turned, the AI pauses and asks an operator for approval using a Human-In-The-Loop (HITL) system.
+4. **It learns continuously:** Every time a new "recipe" works better than the last, it saves it. The system literally gets smarter every single batch.
 
 ---
 
-## Phase 2: Agentic Orchestration (`orchestration_layer.py`)
+## 🎯 Hackathon Problem Statement Alignment
 
-A **LangGraph state machine** that orchestrates the full optimization lifecycle:
+We have chosen **Option B: Optimization Engine Track**. Our project explicitly fulfills all core and universal objectives outlined in the case:
 
-### Node 1 — Data Router & Memory Retrieval
-- Receives simulated live telemetry
-- Queries **Qdrant** in-memory vector DB (L2-normalized numerical vectors) for the nearest matching Golden Signature baseline
-
-### Node 2 — Proxy Caller (The Brain)
-- Feeds context features into the Phase 1 PyTorch Optimization Proxy
-- Retrieves instantly generated, physically repaired settings (< 1ms)
-- **LangSmith `@traceable`** decorator for observability
-- **Openlayer** callback handler monitors for hallucinated parameters
-
-### Conditional Edge — HITL Gate
-- Uses LangGraph `interrupt()` to **pause execution** and surface proposed settings for human review
-- Resumes via `Command(resume={"approved": True/False})` — ready for the Phase 3 React dashboard
-- API hooks documented at `POST /api/approve` and `GET /api/pending-approval`
-
-### Node 3 — Execution & Continuous Learning
-- **MCP Tool** (`execute_machine_parameters`) simulates secure factory execution via `langchain-mcp-adapters`
-- Compares new outcome against historical baseline (yield-to-energy ratio)
-- If improved, **upserts new signature into Qdrant** as the new golden standard
-
-### Pydantic State
-Strictly typed via `ManufacturingState(BaseModel)`:
-`batch_id`, `current_telemetry`, `historical_baseline`, `proposed_settings`, `human_approved`, `execution_status`, `simulated_outcome`, `quality_delta`, `qdrant_updated`
+- ✅ **Golden Signature Framework:** We engineered a custom NSGA-II algorithm to discover Pareto-optimal settings, storing them in a Qdrant Vector database for live comparison.
+- ✅ **Continuous Learning:** Our system automatically tracks batch outcomes and upserts new performance benchmarks (signatures) into memory when historical results are beaten.
+- ✅ **Human-in-the-Loop workflows (HITL):** Using a LangGraph state machine, execution dynamically interrupts to allow humans to review and accept/reject proposed changes via an API-driven React dashboard.
+- ✅ **Multi-Target Optimization:** Our intelligent proxy model inherently balances the primary (Tablet Weight, Friability, Hardness) against the secondary targets (Power Consumption).
 
 ---
 
-## Data Assets
+## 📂 Project Structure
 
-| File | Description | Shape |
-|------|-------------|-------|
-| `test-data/_h_batch_process_data.xlsx` | Time-series telemetry (8 phases) | 211 x 11 |
-| `test-data/_h_batch_production_data.xlsx` | Batch summary (quality + settings) | 60 x 15 |
-| `test-data/training_dataset.csv` | Merged + augmented training data | 60 x 295 |
-| `test-data/golden_signatures.csv` | NSGA-II Pareto-optimal solutions | 4,000 x 297 |
+This repository is split into two primary environments:
 
----
+### 1. The Backend (`/backend`)
+The data engineering, machine learning engine, LangGraph orchestration, and API layer.
+👉 [Read the detailed Technical Backend Architecture here](./backend/README.md)
 
-## Quick Start
-
-```bash
-# Install dependencies
-pip install pandas numpy scikit-learn xgboost torch openpyxl
-pip install langgraph qdrant-client langchain-mcp-adapters openlayer
-
-# Phase 1: Core Engine
-python -X utf8 data_layer.py            # Data ingestion + augmentation
-python -X utf8 offline_optimizer.py     # XGBoost surrogate + NSGA-II
-python -X utf8 model_layer.py           # PyTorch proxy + repair layer
-
-# Phase 2: Agentic Orchestration
-python -X utf8 orchestration_layer.py   # LangGraph + Qdrant + HITL workflow
-```
-
-> **Note**: Use `python -X utf8` on Windows to avoid encoding issues with console output.
+### 2. The Frontend (`/frontend`)
+The React + Vite dashboard displaying the current batch status, historical comparisons, and the human-operator approval gates.
+👉 [Read the Frontend documentation here](./frontend/README.md)
 
 ---
 
-## Tech Stack
+## 🚀 Quick Execution Guide
 
-| Component | Technology |
-|-----------|------------|
-| Data Engineering | Pandas, NumPy, Scikit-learn |
-| Surrogate Model | XGBoost (Multi-output Regressor) |
-| Optimization | NSGA-II (custom implementation) |
-| Neural Proxy | PyTorch (AdamW, CosineAnnealing) |
-| Constraint Enforcement | Deterministic Repair Layer (`torch.clamp` + alternating projections) |
-| Orchestration | LangGraph (Pydantic state machine) |
-| Vector Memory | Qdrant (in-memory, L2-normalized numerical vectors) |
-| Secure Execution | Model Context Protocol (langchain-mcp-adapters) |
-| Observability | LangSmith (`@traceable`) + Openlayer |
-| HITL Workflow | LangGraph `interrupt()` + `Command(resume=...)` |
+For comprehensive setup, please refer to the specific folder READMEs. 
+
+To run the full stack:
+1. Navigate to `/backend` and run the core engine to generate the models and training sets:
+   `python offline_optimizer.py` followed by `python orchestration_layer.py`.
+2. Open a new terminal, navigate to `/frontend`, and start the dashboard with `npm run dev`.
 
 ---
 
-## License
-
-See [LICENSE](LICENSE) for details.
+## 📄 License
+This prototype is released under the [LICENSE](LICENSE).

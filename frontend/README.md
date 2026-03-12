@@ -1,16 +1,40 @@
-# React + Vite
+# Intelli-Credit-Aveva Application Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This frontend is a React + Vite dashboard designed to provide a Human-In-The-Loop (HITL) interface for the Intelli-Credit-Aveva optimization engine.
 
-Currently, two official plugins are available:
+## Overview
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+The AI engine constantly optimizes machine settings to balance tablet yield and energy consumption. However, before radical new "Golden Signatures" (machine settings) are applied to the real factory floor, they require human approval. This React dashboard provides the UI to review, accept, or reject these changes.
 
-## React Compiler
+## Features
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Real-Time Data Visualization**: Displays current batch performance against historical golden signatures.
+- **Human-In-The-Loop Approval Gates**: Surfaces proposed optimizations (e.g., changes to machine speed, pressure, temperature) and their predicted impact on energy usage and yield.
+- **Continuous Improvement Integration**: Allows operators to reprioritize targets and feedback directly impacts the AI's continuous learning cycle.
 
-## Expanding the ESLint configuration
+## Integration points
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The dashboard communicates with the python backend APIs:
+- `GET /api/pending-approval`: Polls for any optimizations paused in the LangGraph state machine waiting for human review.
+- `POST /api/approve`: Sends the operator's decision (`approved: True/False`) back to the LangGraph orchestration layer, resuming the execution node.
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js installed
+
+### Installation & Running
+
+```bash
+# Navigate to the frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start the development server
+npm run dev
+```
+
+The React Compiler is not enabled on this current Vite plugin React setup to preserve fast dev processing. We recommend using ESLint to maintain component architecture.

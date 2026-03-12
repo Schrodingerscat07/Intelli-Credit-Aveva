@@ -257,3 +257,40 @@ body {
   z-index: 2;
   pointer-events: none;
 }
+
+/* New Batch Button */
+.btn-new-batch {
+  background: linear-gradient(135deg, #00c853, #00e676);
+  color: #000;
+  box-shadow: 0 0 20px rgba(0, 200, 83, 0.3);
+  font-size: 1.1rem;
+  padding: 1.2rem 2.5rem;
+}
+
+.btn-new-batch:hover {
+  box-shadow: 0 0 35px rgba(0, 200, 83, 0.6);
+  transform: translateY(-2px);
+}
+
+.btn-new-batch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Welcome Card (initial state before any batch) */
+.welcome-card {
+  max-width: 650px;
+  text-align: center;
+  padding: 3rem 2.5rem;
+  border-color: var(--accent-cyan-dim);
+}
+
+/* Completion Section */
+.completion-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+

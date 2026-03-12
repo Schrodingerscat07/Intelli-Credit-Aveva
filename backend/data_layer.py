@@ -90,7 +90,7 @@ def load_process_data(filepath: Optional[str] = None) -> pd.DataFrame:
     null_counts = df.isnull().sum()
     if null_counts.any():
         print(f"  ⚠ Filling {null_counts.sum()} null values via forward-fill + zero")
-        df = df.fillna(method="ffill").fillna(0)
+        df = df.ffill().fillna(0)
 
     # ── Anomaly detection: IQR + physical limits ────────────────────────
     anomalies_total = 0

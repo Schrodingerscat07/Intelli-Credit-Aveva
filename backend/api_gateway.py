@@ -1,4 +1,6 @@
 import os
+import random
+import uuid
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -109,6 +111,39 @@ async def execute_decision(payload: DecisionPayload):
         pass
         
     return {"status": "resumed", "approved": payload.approved}
+
+@app.post("/api/new_batch")
+async def new_batch(background_tasks: BackgroundTasks):
+    """Generate a new batch with random telemetry and trigger the optimization graph.
+    
+    This allows the frontend dashboard to restart the full workflow cycle 
+    without needing to run trigger_test.py from the command line.
+    """
+    # Generate a unique batch ID
+    batch_id = f"BATCH-{uuid.uuid4().hex[:6].upper()}"
+    
+    # Build realistic 284-dimensional mock telemetry
+    mock_telemetry = {
+        "Temperature_C": round(random.uniform(60, 95), 1),
+        "Pressure_Bar": round(random.uniform(1.0, 3.0), 2),
+        "Humidity_Percent": round(random.uniform(25, 60), 1),
+        "Motor_Speed_RPM": round(random.uniform(40, 100), 1),
+        "Compression_Force_kN": round(random.uniform(8, 25), 1),
+        "Flow_Rate_LPM": round(random.uniform(80, 200), 1),
+        "Power_Consumption_kW": round(random.uniform(15, 50), 1),
+        "Vibration_mm_s": round(random.uniform(2, 8), 2),
+        "Thermal_Ramp_Rate": round(random.uniform(0.5, 3.0), 2),
+        "Power_AUC": round(random.uniform(500, 2000), 1),
+        "Vibration_AUC": round(random.uniform(100, 500), 1),
+    }
+    
+    # Pad to 284 features to match the Golden Signature context dimension
+    for i in range(284 - len(mock_telemetry)):
+        mock_telemetry[f"Feature_{i}"] = round(random.gauss(0.5, 0.1), 4)
+    
+    background_tasks.add_task(run_graph_background, batch_id, mock_telemetry)
+    print(f"🆕 New batch triggered from dashboard: {batch_id}")
+    return {"status": "started", "batch_id": batch_id}
 
 if __name__ == "__main__":
     uvicorn.run("api_gateway:app", host="127.0.0.1", port=8000, reload=True)
