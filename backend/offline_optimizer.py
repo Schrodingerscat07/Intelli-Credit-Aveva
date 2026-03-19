@@ -211,6 +211,51 @@ class SurrogateModel:
                 full_X[:, i] = context_row[i]
         return self.predict(full_X)
 
+    def get_feature_importances(self, top_n: int = 15) -> Dict[str, float]:
+        """Extract feature importances from the XGBoost sub-models.
+
+        Averages the per-target feature importances across all outputs
+        to produce a single unified ranking.
+
+        Parameters
+        ----------
+        top_n : int
+            Number of top features to return.
+
+        Returns
+        -------
+        Dict[str, float]
+            Feature name → importance score (normalized to sum to 1.0).
+        """
+        if not self._is_fitted:
+            return {}
+
+        # Each estimator in MultiOutputRegressor has its own feature_importances_
+        all_importances = np.zeros(len(self.feature_names))
+        n_estimators = len(self.model.estimators_)
+
+        for estimator in self.model.estimators_:
+            imp = estimator.feature_importances_
+            all_importances += imp
+
+        # Average across targets
+        all_importances /= max(n_estimators, 1)
+
+        # Normalize
+        total = all_importances.sum()
+        if total > 0:
+            all_importances /= total
+
+        # Build sorted dict
+        feat_imp = {
+            self.feature_names[i]: float(all_importances[i])
+            for i in range(len(self.feature_names))
+        }
+        sorted_imp = dict(
+            sorted(feat_imp.items(), key=lambda x: abs(x[1]), reverse=True)[:top_n]
+        )
+        return sorted_imp
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. NSGA-II MULTI-OBJECTIVE OPTIMIZER
