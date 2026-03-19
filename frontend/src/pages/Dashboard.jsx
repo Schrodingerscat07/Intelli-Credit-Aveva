@@ -52,8 +52,10 @@ export default function Dashboard() {
 
   const liveTelemetry = gameState?.current_telemetry || {};
   const baselineValues = gameState?.historical_baseline || {};
+  const healthScore = gameState?.asset_health_score || 100;
+  const carbonMetrics = gameState?.carbon_metrics || {};
   
-  const sysHealth = gameState ? (95 + ((liveTelemetry?.Pressure_Bar || 1.0) * 1.2)).toFixed(1) : '98.4';
+  const sysHealth = healthScore.toFixed(1);
   const eff = gameState ? (90 + ((liveTelemetry?.Humidity_Percent || 30) % 8)).toFixed(1) : '94.2';
   const estMins = gameState ? Math.floor(10 + ((liveTelemetry?.Motor_Speed_RPM || 40) % 49)) : 45;
   const estTime = `18:${estMins.toString().padStart(2, '0')}`;
@@ -80,14 +82,15 @@ export default function Dashboard() {
       
       {error && <div style={{ color: '#d32f2f', padding: '1rem', backgroundColor: '#ffebee', borderRadius: '4px' }}>{error}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem' }}>
+      {/* Top KPI Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1.5rem' }}>
         <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
-          <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>System Health</div>
-          <div style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+          <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Asset Health</div>
+          <div style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', display: 'flex', alignItems: 'baseline', gap: '0.5rem', color: healthScore < 85 ? '#d32f2f' : healthScore < 95 ? '#ed6c02' : '#1a1a1a' }}>
             {sysHealth}%
-            <span style={{ fontSize: '0.9rem', color: '#2e7d32', display: 'flex', alignItems: 'center', fontWeight: 600 }}>
-               <ArrowUpward fontSize="inherit" /> {(liveTelemetry?.Thermal_Ramp_Rate || 1.2).toFixed(1)}%
-            </span>
+          </div>
+          <div style={{ width: '100%', height: '4px', backgroundColor: '#eee', borderRadius: '2px', marginTop: '0.5rem' }}>
+            <div style={{ width: `${healthScore}%`, height: '100%', backgroundColor: healthScore < 85 ? '#d32f2f' : healthScore < 95 ? '#ed6c02' : '#2e7d32', borderRadius: '2px', transition: 'width 0.5s ease' }} />
           </div>
         </div>
         <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
@@ -100,6 +103,13 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+          <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Carbon / Batch</div>
+          <div style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+            {(carbonMetrics?.carbon_kg || 0).toFixed(1)}
+            <span style={{ fontSize: '1rem', color: '#666', fontWeight: 400 }}>kgCO₂</span>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
           <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Completion Est</div>
           <div style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
             {estTime}
@@ -107,10 +117,11 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Telemetry Signature */}
       <div style={{ backgroundColor: 'white', borderRadius: '12px', padding: '2rem', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
         <h2 style={{ margin: '0 0 1.5rem 0', fontSize: '1.25rem' }}>Telemetry Signature</h2>
         
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '2rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '2rem' }}>
           <div>
             <div style={{ color: '#666', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Temperature (°C)</div>
             <div style={{ fontSize: '1.75rem', fontWeight: 600 }}>
@@ -134,9 +145,31 @@ export default function Dashboard() {
               {(liveTelemetry?.Motor_Speed_RPM || 0).toFixed(1)}
             </div>
           </div>
+          <div>
+            <div style={{ color: '#666', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Power (kW)</div>
+            <div style={{ fontSize: '1.75rem', fontWeight: 600 }}>
+              {(liveTelemetry?.Power_Consumption_kW || 0).toFixed(1)}
+            </div>
+          </div>
         </div>
       </div>
-      
+
+      {/* Energy Recommendations */}
+      {gameState?.energy_recommendations && gameState.energy_recommendations.length > 0 && (
+        <div style={{ backgroundColor: 'white', borderRadius: '12px', padding: '2rem', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+          <h2 style={{ margin: '0 0 1rem 0', fontSize: '1.25rem' }}>Energy & Maintenance Alerts</h2>
+          {gameState.energy_recommendations.map((rec, i) => (
+            <div key={i} style={{
+              padding: '0.75rem 1rem', marginBottom: '0.5rem', borderRadius: '6px', fontSize: '0.85rem',
+              backgroundColor: rec.startsWith('URGENT') ? '#ffebee' : rec.startsWith('MONITOR') ? '#fff3e0' : '#e8f5e9',
+              borderLeft: `3px solid ${rec.startsWith('URGENT') ? '#d32f2f' : rec.startsWith('MONITOR') ? '#ed6c02' : '#2e7d32'}`,
+              color: '#333', lineHeight: 1.5,
+            }}>
+              {rec}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
