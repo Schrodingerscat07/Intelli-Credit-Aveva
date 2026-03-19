@@ -59,13 +59,19 @@ from qdrant_client.models import (
 
 # ── Phase 1 Imports ────────────────────────────────────────────────────
 from data_layer import build_training_dataset, DATA_DIR, SENSOR_COLS
-from offline_optimizer import DECISION_VARS, DECISION_BOUNDS, TARGET_COLS
+from offline_optimizer import DECISION_VARS, DECISION_BOUNDS, TARGET_COLS, SurrogateModel
 from model_layer import (
     OptimizationProxy,
     RepairLayer,
     InferenceEngine,
     DEVICE,
 )
+
+# ── Phase 2+ Imports: New Feature Modules ──────────────────────────────
+from carbon_tracker import CarbonTracker, calculate_carbon
+from batch_history import BatchHistoryStore
+from energy_analyzer import EnergyPatternAnalyzer
+from decision_memory import DecisionMemory
 
 # ── PyTorch / sklearn ──────────────────────────────────────────────────
 import torch
@@ -175,6 +181,43 @@ class ManufacturingState(BaseModel):
     qdrant_updated: bool = Field(
         default=False,
         description="Whether Qdrant was updated with a new golden signature",
+    )
+
+    # ── NEW: Carbon Emissions ──────────────────────────────────────
+    carbon_metrics: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Per-batch carbon emission calculations",
+    )
+
+    # ── NEW: Energy Pattern Analysis ───────────────────────────────
+    energy_anomalies: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Detected energy consumption anomalies vs baseline",
+    )
+    asset_health_score: float = Field(
+        default=100.0,
+        description="Overall asset health score (0-100)",
+    )
+    energy_recommendations: List[str] = Field(
+        default_factory=list,
+        description="Maintenance recommendations from energy analysis",
+    )
+
+    # ── NEW: Decision Memory ───────────────────────────────────────
+    past_decision_warnings: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Warnings about similar past HITL decisions",
+    )
+
+    # ── NEW: Optimization Priorities ───────────────────────────────
+    optimization_priorities: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "objective_primary": "Tablet_Weight",
+            "objective_secondary": "Power_Consumption_kW",
+            "priority_value": 50,
+            "mode": "yield_vs_energy",
+        },
+        description="User-configurable optimization objective priorities",
     )
 
 
@@ -554,6 +597,31 @@ _proxy_model: Optional[OptimizationProxy] = None
 _input_scaler: Optional[StandardScaler] = None
 _output_scaler: Optional[StandardScaler] = None
 
+# ── NEW: Feature modules ────────────────────────────────────────────
+_carbon_tracker: Optional[CarbonTracker] = None
+_batch_history: Optional[BatchHistoryStore] = None
+_energy_analyzer: Optional[EnergyPatternAnalyzer] = None
+_decision_memory: Optional[DecisionMemory] = None
+_surrogate_model: Optional[SurrogateModel] = None
+
+# ── NEW: Global priorities (updated by frontend) ────────────────────
+_current_priorities: Dict[str, Any] = {
+    "objective_primary": "Tablet_Weight",
+    "objective_secondary": "Power_Consumption_kW",
+    "priority_value": 50,
+    "mode": "yield_vs_energy",
+}
+
+# ── NEW: Regulatory targets ─────────────────────────────────────────
+_regulatory_targets: Dict[str, Any] = {
+    "max_carbon_per_batch_kg": 25.0,
+    "max_power_per_batch_kwh": 50.0,
+    "min_yield_pct": 90.0,
+    "min_hardness": 4.0,
+    "max_friability": 1.0,
+    "emission_factor_name": "india_grid",
+}
+
 
 def _get_context_cols(golden_df: pd.DataFrame) -> List[str]:
     """Extract context column names from Golden Signatures."""
@@ -594,9 +662,21 @@ def data_router_node(state: ManufacturingState) -> dict:
         baseline.get("source", "unknown"),
     )
 
+    # ── NEW: Energy Pattern Analysis ──────────────────────────────
+    energy_result = _energy_analyzer.analyze_patterns(
+        state.current_telemetry, baseline
+    )
+    log.info("  Asset Health Score: %.1f%%", energy_result["asset_health_score"])
+    log.info("  Energy Anomalies: %d detected", energy_result["anomaly_count"])
+    for rec in energy_result["recommendations"]:
+        log.info("    → %s", rec)
+
     return _to_native({
         "historical_baseline": baseline,
         "baseline_score": score,
+        "energy_anomalies": energy_result["anomalies"],
+        "asset_health_score": energy_result["asset_health_score"],
+        "energy_recommendations": energy_result["recommendations"],
     })
 
 
@@ -710,15 +790,20 @@ def hitl_gate_node(state: ManufacturingState) -> dict:
     for var, val in state.proposed_settings.items():
         log.info("    %s = %.2f", var, val)
 
+    # ── NEW: Check decision memory for similar past decisions ──────
+    decision_warnings = _decision_memory.get_warnings(state.proposed_settings)
+    if decision_warnings:
+        log.info("  ⚠️ Decision Memory warnings:")
+        for w in decision_warnings:
+            log.info("    → %s (Feedback: %s)", w["message"], w["feedback"])
+
     # ── INTERRUPT: Pause graph execution here ───────────────────────
-    # The interrupt() call pauses the graph and surfaces the payload
-    # to the caller. The graph will resume when the caller invokes
-    # graph.invoke(Command(resume={"approved": True/False}), config)
     human_decision = interrupt({
         "message": "Please review and approve the proposed machine settings.",
         "batch_id": state.batch_id,
         "proposed_settings": state.proposed_settings,
         "baseline_score": state.baseline_score,
+        "past_decision_warnings": decision_warnings,
         "instructions": (
             "POST /api/approve with {'approved': true} to proceed, "
             "or {'approved': false, 'feedback': '...'} to reject."
@@ -735,13 +820,22 @@ def hitl_gate_node(state: ManufacturingState) -> dict:
             "human_approved": True,
             "human_feedback": feedback,
             "execution_status": "approved",
+            "past_decision_warnings": decision_warnings,
         }
     else:
         log.info("  REJECTED by human operator. Feedback: %s", feedback)
+        # Log rejected decision immediately
+        _decision_memory.log_decision(
+            batch_id=state.batch_id,
+            proposed_settings=state.proposed_settings,
+            approved=False,
+            feedback=feedback,
+        )
         return {
             "human_approved": False,
             "human_feedback": feedback,
             "execution_status": "rejected",
+            "past_decision_warnings": decision_warnings,
         }
 
 
@@ -823,11 +917,43 @@ def execution_node(state: ManufacturingState) -> dict:
     else:
         log.info("  No improvement over baseline. Qdrant NOT updated.")
 
+    # ── NEW: Carbon Emission Tracking ─────────────────────────────
+    power_kw = outcome.get("Power_Consumption_kW", 20.0)
+    carbon_result = _carbon_tracker.track_batch(
+        batch_id=state.batch_id,
+        power_kw=power_kw,
+    )
+    log.info("  Carbon: %.3f kgCO₂ (cumulative: %.3f kgCO₂)",
+             carbon_result["carbon_kg"], carbon_result["cumulative_carbon_kg"])
+
+    # ── NEW: Log decision to decision memory ─────────────────────
+    _decision_memory.log_decision(
+        batch_id=state.batch_id,
+        proposed_settings=state.proposed_settings,
+        approved=True,
+        feedback=state.human_feedback,
+        quality_delta=float(quality_delta),
+    )
+
+    # ── NEW: Add to batch history ─────────────────────────────────
+    _batch_history.add_batch(
+        batch_id=state.batch_id,
+        proposed_settings=state.proposed_settings,
+        simulated_outcome=outcome,
+        quality_delta=float(quality_delta),
+        qdrant_updated=qdrant_updated,
+        human_approved=True,
+        human_feedback=state.human_feedback,
+        carbon_metrics=carbon_result,
+        energy_anomalies=state.energy_anomalies,
+    )
+
     return _to_native({
         "execution_status": exec_status,
         "simulated_outcome": outcome,
         "quality_delta": float(quality_delta),
         "qdrant_updated": qdrant_updated,
+        "carbon_metrics": carbon_result,
     })
 
 
@@ -901,6 +1027,8 @@ def initialize_system(
     """
     global _vector_memory, _mcp_executor, _openlayer
     global _proxy_model, _input_scaler, _output_scaler
+    global _carbon_tracker, _batch_history, _energy_analyzer
+    global _decision_memory, _surrogate_model
 
     if golden_signatures_path is None:
         golden_signatures_path = os.path.join(DATA_DIR, "golden_signatures.csv")
@@ -957,6 +1085,23 @@ def initialize_system(
     # ── Initialize MCP executor & Openlayer ─────────────────────────
     _mcp_executor = MCPToolExecutor()
     _openlayer = OpenlayerMonitor()
+
+    # ── NEW: Initialize feature modules ─────────────────────────────
+    _carbon_tracker = CarbonTracker()
+    _batch_history = BatchHistoryStore()
+    _energy_analyzer = EnergyPatternAnalyzer()
+    _decision_memory = DecisionMemory()
+
+    # ── NEW: Train surrogate and keep reference for feature importances
+    _surrogate_model = SurrogateModel()
+    try:
+        from data_layer import build_training_dataset
+        training_data = build_training_dataset()
+        _surrogate_model.fit(training_data)
+        log.info("  Surrogate model trained for feature importances")
+    except Exception as e:
+        log.warning("  Could not train surrogate for SHAP: %s", e)
+        _surrogate_model = None
 
     log.info("System initialization complete!")
 
