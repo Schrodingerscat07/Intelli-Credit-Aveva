@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.spatial.distance import mahalanobis
 from sklearn.model_selection import cross_val_score
 from sklearn.multioutput import MultiOutputRegressor
 from xgboost import XGBRegressor
@@ -103,6 +104,18 @@ class SurrogateModel:
         self.target_names: List[str] = TARGET_COLS
         self._is_fitted: bool = False
 
+        # ── Novelty Detection (Mahalanobis distance) ────────────────────
+        self._train_centroid: Optional[np.ndarray] = None
+        self._train_cov_inv: Optional[np.ndarray] = None
+        self._novelty_threshold: float = 0.0  # 95th percentile of training distances
+
+        # ── Uncertainty Quantification (Quantile Regression) ────────────
+        self._quantile_models: Dict[str, MultiOutputRegressor] = {}  # key = '10', '90'
+        self._seed = seed
+        self._n_estimators = n_estimators
+        self._max_depth = max_depth
+        self._learning_rate = learning_rate
+
     def fit(self, df: pd.DataFrame) -> "SurrogateModel":
         """Train the surrogate on the merged training dataset.
 
@@ -152,6 +165,47 @@ class SurrogateModel:
         self.model.fit(X, y)
         self._is_fitted = True
 
+        # ── Novelty Detection: compute Mahalanobis centroid + covariance ──
+        self._train_centroid = X.mean(axis=0)
+        try:
+            cov = np.cov(X, rowvar=False)
+            # Regularize covariance to avoid singularity
+            cov += np.eye(cov.shape[0]) * 1e-6
+            self._train_cov_inv = np.linalg.inv(cov)
+            # Compute distances for all training points → 95th percentile = threshold
+            train_distances = np.array([
+                mahalanobis(X[i], self._train_centroid, self._train_cov_inv)
+                for i in range(len(X))
+            ])
+            self._novelty_threshold = float(np.percentile(train_distances, 95))
+            print(f"[NOVELTY] Mahalanobis threshold (95th pctl): {self._novelty_threshold:.2f}")
+        except np.linalg.LinAlgError:
+            print("[NOVELTY] ⚠ Covariance matrix singular — novelty detection disabled")
+            self._train_cov_inv = None
+            self._novelty_threshold = 1e9  # effectively disabled
+
+        # ── Uncertainty: train quantile regression models (10th, 90th) ──
+        for q_label, q_val in [("10", 0.1), ("90", 0.9)]:
+            try:
+                q_model = MultiOutputRegressor(
+                    XGBRegressor(
+                        n_estimators=self._n_estimators,
+                        max_depth=self._max_depth,
+                        learning_rate=self._learning_rate,
+                        subsample=0.8,
+                        colsample_bytree=0.8,
+                        random_state=self._seed,
+                        verbosity=0,
+                        objective="reg:quantileerror",
+                        quantile_alpha=q_val,
+                    )
+                )
+                q_model.fit(X, y)
+                self._quantile_models[q_label] = q_model
+                print(f"[UNCERTAINTY] Trained quantile model (q={q_val})")
+            except Exception as e:
+                print(f"[UNCERTAINTY] ⚠ Quantile model q={q_val} failed: {e}")
+
         # Cross-validation report
         print(f"[SURROGATE] Cross-validation R² scores:")
         for i, target in enumerate(y_cols):
@@ -180,6 +234,79 @@ class SurrogateModel:
         if not self._is_fitted:
             raise RuntimeError("Surrogate model not fitted yet")
         return self.model.predict(X)
+
+    def predict_with_uncertainty(self, X: np.ndarray) -> Dict[str, np.ndarray]:
+        """Predict targets with confidence intervals and novelty flags.
+
+        Returns
+        -------
+        Dict with keys:
+          - 'mean': median predictions, shape (n_samples, n_targets)
+          - 'lower': 10th percentile, shape (n_samples, n_targets)
+          - 'upper': 90th percentile, shape (n_samples, n_targets)
+          - 'novelty_distances': Mahalanobis distance per sample
+          - 'is_novel': bool array, True if outside training distribution
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Surrogate model not fitted yet")
+
+        mean_pred = self.model.predict(X)
+
+        # Quantile predictions
+        if "10" in self._quantile_models and "90" in self._quantile_models:
+            lower = self._quantile_models["10"].predict(X)
+            upper = self._quantile_models["90"].predict(X)
+        else:
+            # Fallback: use ±10% of mean as approximate interval
+            lower = mean_pred * 0.9
+            upper = mean_pred * 1.1
+
+        # Novelty detection
+        distances = np.zeros(X.shape[0])
+        is_novel = np.zeros(X.shape[0], dtype=bool)
+        if self._train_cov_inv is not None and self._train_centroid is not None:
+            for i in range(X.shape[0]):
+                try:
+                    distances[i] = mahalanobis(
+                        X[i], self._train_centroid, self._train_cov_inv
+                    )
+                except Exception:
+                    distances[i] = 1e9
+            is_novel = distances > self._novelty_threshold
+
+        return {
+            "mean": mean_pred,
+            "lower": lower,
+            "upper": upper,
+            "novelty_distances": distances,
+            "is_novel": is_novel,
+        }
+
+    def check_novelty(self, X: np.ndarray) -> Dict[str, object]:
+        """Check if input is within the known training distribution.
+
+        Returns
+        -------
+        Dict with 'distance', 'threshold', 'is_novel', 'confidence_msg'.
+        """
+        if self._train_cov_inv is None or self._train_centroid is None:
+            return {
+                "distance": 0.0, "threshold": 1e9,
+                "is_novel": False, "confidence_msg": "Novelty detection unavailable"
+            }
+        try:
+            dist = mahalanobis(X.flatten(), self._train_centroid, self._train_cov_inv)
+        except Exception:
+            dist = 1e9
+        is_novel = dist > self._novelty_threshold
+        msg = ("⚠ LOW CONFIDENCE — outside known operating range"
+               if is_novel else "✓ Within known training distribution")
+        return {
+            "distance": float(dist),
+            "threshold": float(self._novelty_threshold),
+            "is_novel": bool(is_novel),
+            "confidence_msg": msg,
+        }
 
     def predict_from_decisions(
         self, decisions: np.ndarray, context_row: np.ndarray
