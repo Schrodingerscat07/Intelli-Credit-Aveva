@@ -816,7 +816,18 @@ def proxy_caller_node(state: ManufacturingState) -> dict:
     # ── Feature 10: Novelty Detection from Surrogate ──────────────────
     if _surrogate_model and _surrogate_model._is_fitted:
         try:
-            novelty_result = _surrogate_model.check_novelty(context_values)
+            # Build input feature vector matching surrogate's expected features
+            feat_vals = []
+            for fname in _surrogate_model.feature_names:
+                if fname in proposed:
+                    feat_vals.append(float(proposed[fname]))
+                elif fname in state.current_telemetry:
+                    feat_vals.append(float(state.current_telemetry[fname]))
+                else:
+                    feat_vals.append(0.0)
+            X_full = np.array([feat_vals], dtype=np.float64)
+
+            novelty_result = _surrogate_model.check_novelty(X_full)
             state_additions["novelty_warning"] = novelty_result
             if novelty_result.get("is_novel", False):
                 log.warning("  ⚠️ Novelty detected! Mahalanobis distance %.2f > threshold %.2f",
