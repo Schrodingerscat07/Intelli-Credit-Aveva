@@ -1,0 +1,42 @@
+[
+  {
+    "batch_id": "BATCH-B03973",
+    "timestamp": 1774029308.800588,
+    "timestamp_iso": "2026-03-20T23:25:08",
+    "proposed_settings": {
+      "Granulation_Time": 9.0,
+      "Binder_Amount": 15.0,
+      "Drying_Temp": 80.0,
+      "Drying_Time": 20.0,
+      "Compression_Force": 25.0,
+      "Machine_Speed": 60.0,
+      "Lubricant_Conc": 2.0
+    },
+    "simulated_outcome": {
+      "Tablet_Weight": 503.05,
+      "Hardness": 4.96,
+      "Friability": 0.975,
+      "Power_Consumption_kW": 31.44
+    },
+    "quality_delta": 5.180454,
+    "qdrant_updated": true,
+    "human_approved": true,
+    "human_feedback": "Approved by operator",
+    "carbon_metrics": {
+      "batch_id": "BATCH-B03973",
+      "power_kw": 31.44,
+      "duration_hours": 1.5,
+      "energy_kwh": 47.16,
+      "emission_factor": 0.82,
+      "carbon_kg": 38.671,
+      "carbon_intensity": 0.82,
+      "cumulative_carbon_kg": 38.671,
+      "cumulative_energy_kwh": 47.16,
+      "exceeds_carbon_limit": true,
+      "exceeds_power_limit": false,
+      "carbon_limit_kg": 25.0,
+      "power_limit_kwh": 50.0
+    },
+    "energy_anomalies": []
+  }
+]

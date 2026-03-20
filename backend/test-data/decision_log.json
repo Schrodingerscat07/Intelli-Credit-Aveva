@@ -1,0 +1,19 @@
+[
+  {
+    "batch_id": "BATCH-B03973",
+    "timestamp": 1774029308.7989814,
+    "timestamp_iso": "2026-03-20T23:25:08",
+    "proposed_settings": {
+      "Granulation_Time": 9.0,
+      "Binder_Amount": 15.0,
+      "Drying_Temp": 80.0,
+      "Drying_Time": 20.0,
+      "Compression_Force": 25.0,
+      "Machine_Speed": 60.0,
+      "Lubricant_Conc": 2.0
+    },
+    "approved": true,
+    "feedback": "Approved by operator",
+    "quality_delta": 5.180454
+  }
+]
