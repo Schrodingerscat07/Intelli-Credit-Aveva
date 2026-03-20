@@ -54,11 +54,15 @@ export default function Dashboard() {
   const baselineValues = gameState?.historical_baseline || {};
   const healthScore = gameState?.asset_health_score || 100;
   const carbonMetrics = gameState?.carbon_metrics || {};
-  
+  const outcome = gameState?.simulated_outcome || {};
+  const qualityDelta = gameState?.quality_delta || 0;
+  const baselineScore = gameState?.baseline_score || 0;
+
+  // Real values from backend
   const sysHealth = healthScore.toFixed(1);
-  const eff = gameState ? (90 + ((liveTelemetry?.Humidity_Percent || 30) % 8)).toFixed(1) : '94.2';
-  const estMins = gameState ? Math.floor(10 + ((liveTelemetry?.Motor_Speed_RPM || 40) % 49)) : 45;
-  const estTime = `18:${estMins.toString().padStart(2, '0')}`;
+  const tabletWeight = outcome?.Tablet_Weight;
+  const yieldDisplay = tabletWeight ? tabletWeight.toFixed(1) : '---';
+  const matchScore = baselineScore ? (baselineScore * 100).toFixed(1) : '---';
 
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
@@ -94,12 +98,15 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
-          <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Efficiency</div>
+          <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Tablet Weight</div>
           <div style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-            {eff}%
-            <span style={{ fontSize: '0.9rem', color: '#2e7d32', display: 'flex', alignItems: 'center', fontWeight: 600 }}>
-               <ArrowUpward fontSize="inherit" /> {(liveTelemetry?.Vibration_mm_s || 0.8).toFixed(1)}%
-            </span>
+            {yieldDisplay}
+            {qualityDelta !== 0 && (
+              <span style={{ fontSize: '0.9rem', color: qualityDelta > 0 ? '#2e7d32' : '#d32f2f', display: 'flex', alignItems: 'center', fontWeight: 600 }}>
+                {qualityDelta > 0 ? <ArrowUpward fontSize="inherit" /> : <ArrowDownward fontSize="inherit" />}
+                {qualityDelta > 0 ? '+' : ''}{(qualityDelta * 100).toFixed(2)}%
+              </span>
+            )}
           </div>
         </div>
         <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
@@ -110,10 +117,16 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
-          <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Completion Est</div>
-          <div style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-            {estTime}
+          <div style={{ fontSize: '0.85rem', color: '#666', fontWeight: 600, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Qdrant Match</div>
+          <div style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', display: 'flex', alignItems: 'baseline', gap: '0.5rem', color: baselineScore < 0.85 ? '#d32f2f' : '#1a1a1a' }}>
+            {matchScore}
+            <span style={{ fontSize: '1rem', color: '#666', fontWeight: 400 }}>%</span>
           </div>
+          {baselineScore > 0 && (
+            <div style={{ fontSize: '0.75rem', color: baselineScore < 0.85 ? '#d32f2f' : '#2e7d32', fontWeight: 600, marginTop: '0.25rem' }}>
+              {baselineScore < 0.85 ? '⚠ Low confidence' : '✓ Strong match'}
+            </div>
+          )}
         </div>
       </div>
 

@@ -64,6 +64,10 @@ export default function Execution() {
   const delta = gameState?.quality_delta || 0;
   const warnings = gameState?.past_decision_warnings || [];
   const carbonMetrics = gameState?.carbon_metrics || {};
+  const noConfidentMatch = gameState?.no_confident_match;
+  const noveltyWarning = gameState?.novelty_warning || {};
+  const retrainingAlert = gameState?.retraining_alert;
+  const predictionIntervals = gameState?.prediction_intervals || {};
 
   return (
     <div style={{ maxWidth: '800px', margin: '0 auto', fontFamily: '"Inter", sans-serif' }}>
@@ -117,6 +121,59 @@ export default function Execution() {
           </div>
         )}
 
+        {/* Phase 2 Fallback, Novelty, and Drift Warnings */}
+        {(noConfidentMatch || noveltyWarning || retrainingAlert) && (
+          <div style={{ marginBottom: '2rem' }}>
+            {noConfidentMatch && (
+              <div style={{ 
+                display: 'flex', gap: '0.75rem', padding: '1rem', marginBottom: '0.5rem',
+                backgroundColor: '#fff3cd', borderLeft: '4px solid #ffc107', borderRadius: '4px' 
+              }}>
+                <Warning style={{ color: '#ffc107', fontSize: '1.25rem', flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#333' }}>Qdrant Fallback Triggered</div>
+                  <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                    Low match score (&lt; 0.85). The Golden Signature retrieved is not a confident match. Manual review is highly recommended.
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {noveltyWarning?.is_novel && (
+              <div style={{ 
+                display: 'flex', gap: '0.75rem', padding: '1rem', marginBottom: '0.5rem',
+                backgroundColor: '#f8d7da', borderLeft: '4px solid #dc3545', borderRadius: '4px' 
+              }}>
+                <Warning style={{ color: '#dc3545', fontSize: '1.25rem', flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#333' }}>Surrogate Model Novelty Detection</div>
+                  <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                    {noveltyWarning.confidence_msg || 'Input is outside the known training distribution.'}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.25rem' }}>
+                    Mahalanobis Distance: {(noveltyWarning.distance || 0).toFixed(2)} (threshold: {(noveltyWarning.threshold || 0).toFixed(2)})
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {retrainingAlert && (
+              <div style={{ 
+                display: 'flex', gap: '0.75rem', padding: '1rem', marginBottom: '0.5rem',
+                backgroundColor: '#e2e3e5', borderLeft: '4px solid #6c757d', borderRadius: '4px' 
+              }}>
+                <Warning style={{ color: '#6c757d', fontSize: '1.25rem', flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#333' }}>Model Drift Detected</div>
+                  <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                    Actual outcomes for recent batches fall outside the proxy's 80% confidence interval. Retraining is required.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         <h3 style={{ fontSize: '1rem', marginTop: 0, marginBottom: '1.5rem', color: '#1a1a1a' }}>Proposed Parameters</h3>
         
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
@@ -155,6 +212,7 @@ export default function Execution() {
         )}
 
         {isComplete ? (
+          <>
           <div style={{ backgroundColor: gameState.status === 'executed' ? '#e8f5e9' : '#ffebee', padding: '1.5rem', borderRadius: '8px', border: `1px solid ${gameState.status === 'executed' ? '#c8e6c9' : '#ffcdd2'}` }}>
             <h4 style={{ margin: '0 0 0.5rem 0', color: gameState.status === 'executed' ? '#2e7d32' : '#d32f2f' }}>
               {gameState.status === 'executed' ? 'Settings Applied to Floor' : 'Batch Discarded'}
@@ -163,6 +221,28 @@ export default function Execution() {
               {gameState.status === 'executed' ? `Quality Delta vs Baseline: ${delta > 0 ? '+' : ''}${delta.toFixed(4)}. Qdrant Vector DB updated: ${gameState.qdrant_updated ? 'Yes' : 'No'}.` : 'No changes were made to the baseline parameters.'}
             </p>
           </div>
+
+          {/* Prediction Intervals (Uncertainty Quantification) */}
+          {Object.keys(predictionIntervals).length > 0 && (
+            <div style={{ marginTop: '1.5rem' }}>
+              <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: '#1a1a1a' }}>Prediction Intervals (80% Confidence)</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                {Object.entries(predictionIntervals).map(([target, pi]) => (
+                  <div key={target} style={{ backgroundColor: '#f0f4ff', padding: '1rem', borderRadius: '8px' }}>
+                    <div style={{ fontSize: '0.8rem', color: '#666', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{target.replace(/_/g, ' ')}</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '0.25rem' }}>{pi.predicted?.toFixed(2)}</div>
+                    <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.25rem' }}>
+                      [{pi.lower_10?.toFixed(2)} — {pi.upper_90?.toFixed(2)}]
+                    </div>
+                    <div style={{ width: '100%', height: '4px', backgroundColor: '#e0e0e0', borderRadius: '2px', marginTop: '0.5rem', position: 'relative' }}>
+                      <div style={{ position: 'absolute', left: '20%', right: '20%', height: '100%', backgroundColor: '#1152d4', borderRadius: '2px', opacity: 0.4 }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          </>
         ) : (
           <div style={{ display: 'flex', gap: '1rem' }}>
             <button 
