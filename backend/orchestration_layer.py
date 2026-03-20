@@ -301,11 +301,9 @@ class VectorMemory:
             dtype=np.float64,
         ).reshape(1, -1)
 
-        # Scale using the fitted scaler
-        if self._scaler_fitted:
-            scaled = self.scaler.transform(raw).flatten()
-        else:
-            scaled = raw.flatten()
+        # Scale using the fitted scaler (REMOVED: scaling centers around 0, 
+        # which breaks cosine similarity directionality for perturbed vectors)
+        scaled = raw.flatten()
 
         # L2 normalize for cosine similarity
         norm = np.linalg.norm(scaled)
