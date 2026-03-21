@@ -358,5 +358,233 @@
       "power_limit_kwh": 50.0
     },
     "energy_anomalies": []
+  },
+  {
+    "batch_id": "BATCH-4A8DB6",
+    "timestamp": 1774070364.5886843,
+    "timestamp_iso": "2026-03-21T10:49:24",
+    "proposed_settings": {
+      "Granulation_Time": 9.0,
+      "Binder_Amount": 5.0,
+      "Drying_Temp": 40.0,
+      "Drying_Time": 20.0,
+      "Compression_Force": 5.0,
+      "Machine_Speed": 80.0,
+      "Lubricant_Conc": 0.30000001192092896
+    },
+    "simulated_outcome": {
+      "Tablet_Weight": 134.15,
+      "Hardness": 4.96,
+      "Friability": 0.775,
+      "Power_Consumption_kW": 27.44
+    },
+    "quality_delta": -5.931016,
+    "qdrant_updated": false,
+    "human_approved": true,
+    "human_feedback": "Approved by operator",
+    "carbon_metrics": {
+      "batch_id": "BATCH-4A8DB6",
+      "power_kw": 27.44,
+      "duration_hours": 1.5,
+      "energy_kwh": 41.16,
+      "emission_factor": 0.82,
+      "carbon_kg": 33.751,
+      "carbon_intensity": 0.82,
+      "cumulative_carbon_kg": 33.751,
+      "cumulative_energy_kwh": 41.16,
+      "exceeds_carbon_limit": true,
+      "exceeds_power_limit": false,
+      "carbon_limit_kg": 25.0,
+      "power_limit_kwh": 50.0
+    },
+    "energy_anomalies": [
+      {
+        "phase": "Preparation",
+        "metric": "Power_AUC",
+        "unit": "kW\u00b7min",
+        "current_value": -20.793,
+        "baseline_value": 58.796,
+        "deviation_pct": -135.4,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Mixing Unit / Pre-Processing Station"
+      },
+      {
+        "phase": "Preparation",
+        "metric": "Thermal_Ramp_Rate",
+        "unit": "\u00b0C/min",
+        "current_value": -0.66,
+        "baseline_value": 1.536,
+        "deviation_pct": -143.0,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Mixing Unit / Pre-Processing Station"
+      },
+      {
+        "phase": "Preparation",
+        "metric": "Vibration_Mean",
+        "unit": "mm/s",
+        "current_value": 0.002,
+        "baseline_value": 0.087,
+        "deviation_pct": -98.3,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Mixing Unit / Pre-Processing Station"
+      },
+      {
+        "phase": "Granulation",
+        "metric": "Power_AUC",
+        "unit": "kW\u00b7min",
+        "current_value": -56.8,
+        "baseline_value": 217.788,
+        "deviation_pct": -126.1,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Granulator Motor / Binder Pump"
+      },
+      {
+        "phase": "Granulation",
+        "metric": "Vibration_AUC",
+        "unit": "mm/s\u00b7min",
+        "current_value": 14.686,
+        "baseline_value": 37.287,
+        "deviation_pct": -60.6,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Granulator Motor / Binder Pump"
+      },
+      {
+        "phase": "Granulation",
+        "metric": "Thermal_Ramp_Rate",
+        "unit": "\u00b0C/min",
+        "current_value": 0.184,
+        "baseline_value": 1.501,
+        "deviation_pct": -87.7,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Granulator Motor / Binder Pump"
+      },
+      {
+        "phase": "Granulation",
+        "metric": "Vibration_Mean",
+        "unit": "mm/s",
+        "current_value": -0.978,
+        "baseline_value": 2.628,
+        "deviation_pct": -137.2,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Granulator Motor / Binder Pump"
+      },
+      {
+        "phase": "Drying",
+        "metric": "Power_AUC",
+        "unit": "kW\u00b7min",
+        "current_value": -195.228,
+        "baseline_value": 627.188,
+        "deviation_pct": -131.1,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Drying Chamber / Heating Element"
+      },
+      {
+        "phase": "Drying",
+        "metric": "Vibration_AUC",
+        "unit": "mm/s\u00b7min",
+        "current_value": -7.603,
+        "baseline_value": 41.631,
+        "deviation_pct": -118.3,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Drying Chamber / Heating Element"
+      },
+      {
+        "phase": "Drying",
+        "metric": "Power_Mean",
+        "unit": "kW",
+        "current_value": -9.447,
+        "baseline_value": 25.082,
+        "deviation_pct": -137.7,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Drying Chamber / Heating Element"
+      },
+      {
+        "phase": "Drying",
+        "metric": "Vibration_Mean",
+        "unit": "mm/s",
+        "current_value": 0.666,
+        "baseline_value": 1.807,
+        "deviation_pct": -63.1,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Drying Chamber / Heating Element"
+      },
+      {
+        "phase": "Milling",
+        "metric": "Power_AUC",
+        "unit": "kW\u00b7min",
+        "current_value": 110.101,
+        "baseline_value": 482.817,
+        "deviation_pct": -77.2,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Milling Machine / Blade Assembly"
+      },
+      {
+        "phase": "Milling",
+        "metric": "Power_Mean",
+        "unit": "kW",
+        "current_value": -11.415,
+        "baseline_value": 31.485,
+        "deviation_pct": -136.3,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Milling Machine / Blade Assembly"
+      },
+      {
+        "phase": "Blending",
+        "metric": "Vibration_Mean",
+        "unit": "mm/s",
+        "current_value": 0.388,
+        "baseline_value": 3.323,
+        "deviation_pct": -88.3,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Blender Motor / Agitator Bearings"
+      },
+      {
+        "phase": "Compression",
+        "metric": "Vibration_AUC",
+        "unit": "mm/s\u00b7min",
+        "current_value": 54.913,
+        "baseline_value": 250.507,
+        "deviation_pct": -78.1,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Compression Press / Force Actuator"
+      },
+      {
+        "phase": "Coating",
+        "metric": "Thermal_Ramp_Rate",
+        "unit": "\u00b0C/min",
+        "current_value": -0.309,
+        "baseline_value": 2.06,
+        "deviation_pct": -115.0,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "Coating Drum / Spray Nozzle System"
+      },
+      {
+        "phase": "Quality_Testing",
+        "metric": "Power_AUC",
+        "unit": "kW\u00b7min",
+        "current_value": 54.561,
+        "baseline_value": 168.956,
+        "deviation_pct": -67.7,
+        "direction": "lower",
+        "severity": "CRITICAL",
+        "asset": "QC Instruments / Sensor Calibration"
+      }
+    ]
   }
 ]
