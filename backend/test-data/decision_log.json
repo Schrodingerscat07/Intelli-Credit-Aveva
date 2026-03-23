@@ -168,5 +168,73 @@
     "approved": true,
     "feedback": "Approved by operator",
     "quality_delta": -5.931016
+  },
+  {
+    "batch_id": "BATCH-94887C",
+    "timestamp": 1774079924.5184789,
+    "timestamp_iso": "2026-03-21T13:28:44",
+    "proposed_settings": {
+      "Granulation_Time": 9.0,
+      "Binder_Amount": 15.0,
+      "Drying_Temp": 40.0,
+      "Drying_Time": 20.0,
+      "Compression_Force": 5.0,
+      "Machine_Speed": 80.0,
+      "Lubricant_Conc": 2.0
+    },
+    "approved": true,
+    "feedback": "Approve this batch",
+    "quality_delta": -5.931016
+  },
+  {
+    "batch_id": "BATCH-5A5648",
+    "timestamp": 1774080454.563324,
+    "timestamp_iso": "2026-03-21T13:37:34",
+    "proposed_settings": {
+      "Granulation_Time": 9.0,
+      "Binder_Amount": 15.0,
+      "Drying_Temp": 40.0,
+      "Drying_Time": 20.0,
+      "Compression_Force": 5.0,
+      "Machine_Speed": 80.0,
+      "Lubricant_Conc": 2.0
+    },
+    "approved": false,
+    "feedback": "Reject - needs review",
+    "quality_delta": 0.0
+  },
+  {
+    "batch_id": "BATCH-A53F17",
+    "timestamp": 1774081588.0882154,
+    "timestamp_iso": "2026-03-21T13:56:28",
+    "proposed_settings": {
+      "Granulation_Time": 27.0,
+      "Binder_Amount": 5.0,
+      "Drying_Temp": 40.0,
+      "Drying_Time": 60.0,
+      "Compression_Force": 5.0,
+      "Machine_Speed": 20.0,
+      "Lubricant_Conc": 0.30000001192092896
+    },
+    "approved": true,
+    "feedback": "approve",
+    "quality_delta": -7.266898
+  },
+  {
+    "batch_id": "BATCH-A3540D",
+    "timestamp": 1774081713.5433602,
+    "timestamp_iso": "2026-03-21T13:58:33",
+    "proposed_settings": {
+      "Granulation_Time": 27.0,
+      "Binder_Amount": 5.0,
+      "Drying_Temp": 40.0,
+      "Drying_Time": 60.0,
+      "Compression_Force": 5.0,
+      "Machine_Speed": 20.0,
+      "Lubricant_Conc": 0.30000001192092896
+    },
+    "approved": true,
+    "feedback": "ok approve this",
+    "quality_delta": -6.904216
   }
 ]
