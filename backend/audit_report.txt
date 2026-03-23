@@ -1,0 +1,14 @@
+============================================================
+INTELLI-CREDIT AI - AUDIT COMPLIANCE REPORT
+Generated: 2026-03-23 10:35 UTC
+============================================================
+
+ISO 14064 Carbon Summary:
+  scope_1_kg: 0.0000 kgCO2
+  scope_2_kg: 0.0000 kgCO2
+  scope_3_kg: 0.0000 kgCO2
+  total_kg: 0.0000 kgCO2
+
+Hash Chain: VERIFIED (0 records)
+
+------------------------------------------------------------

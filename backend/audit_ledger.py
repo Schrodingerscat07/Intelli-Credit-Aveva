@@ -1,12 +1,15 @@
 """
 ==============================================================================
-AUDIT LEDGER - Hash-Chained Immutable Audit Trail
+AUDIT LEDGER — V2.0: Hash-Chained Immutable Audit Trail
 ==============================================================================
-Stores all AI decisions in a hash-chained log for ISO 14064 compliance.
-Each record includes: AI suggestion, human decision, carbon outcome,
-and a SHA-256 hash of the previous record for tamper detection.
+Provides a SHA-256 hash-chained immutable log for recording every AI
+suggestion, human decision, and carbon outcome. Each record contains a hash
+of the previous record, making the chain tamper-evident.
 
-Author : Core Engine Team
+Includes ISO 14064 scope classification for carbon emissions and
+auto-generated PDF (or text) compliance reports.
+
+Author : V2.0 Team
 Version: 2.0.0
 ==============================================================================
 """
@@ -16,179 +19,252 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
+import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-data")
-LEDGER_FILE = os.path.join(DATA_DIR, "audit_ledger.json")
-
-# ISO 14064 Emission Scope Classification
-SCOPE_MAP = {
-    "electricity": {"scope": 2, "category": "Purchased Electricity",
-                    "description": "Indirect GHG from purchased electricity for manufacturing"},
-    "natural_gas": {"scope": 1, "category": "Stationary Combustion",
-                    "description": "Direct GHG from on-site natural gas combustion"},
-    "renewable":   {"scope": 2, "category": "Purchased Renewable Energy",
-                    "description": "Indirect GHG from purchased renewable electricity"},
-}
+log = logging.getLogger("audit_ledger")
 
 
-def _compute_hash(record: Dict[str, Any], prev_hash: str) -> str:
-    """Compute SHA-256 hash of a record chained to the previous hash."""
-    payload = json.dumps({
-        "prev_hash": prev_hash,
-        "batch_id": record.get("batch_id", ""),
-        "timestamp": record.get("timestamp", 0),
-        "ai_suggestion": record.get("ai_suggestion", {}),
-        "human_decision": record.get("human_decision", ""),
-        "carbon_kg": record.get("carbon_kg", 0),
-    }, sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode()).hexdigest()
+class AuditRecord:
+    """A single immutable audit record in the hash chain."""
 
-
-class AuditLedger:
-    """Hash-chained immutable audit log for ISO 14064 compliance."""
-
-    def __init__(self, filepath: Optional[str] = None) -> None:
-        self.filepath = filepath or LEDGER_FILE
-        self._records: List[Dict[str, Any]] = []
-        self._load()
-
-    def _load(self) -> None:
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, "r", encoding="utf-8") as f:
-                    self._records = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                self._records = []
-
-    def _save(self) -> None:
-        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
-        with open(self.filepath, "w", encoding="utf-8") as f:
-            json.dump(self._records, f, indent=2, default=str)
-
-    def log_decision(
+    def __init__(
         self,
+        index: int,
         batch_id: str,
         ai_suggestion: Dict[str, Any],
         human_decision: str,
         human_feedback: str,
-        carbon_metrics: Dict[str, Any],
-        quality_delta: float,
-        qdrant_updated: bool,
-        energy_source: str = "electricity",
-    ) -> Dict[str, Any]:
-        """Log a decision to the hash-chained audit ledger.
+        carbon_kg: float,
+        power_kw: float,
+        iso_scope: str = "Scope 2",
+        iso_label: str = "Purchased Electricity",
+        previous_hash: str = "GENESIS",
+        extra: Optional[Dict[str, Any]] = None,
+    ):
+        self.index = index
+        self.batch_id = batch_id
+        self.timestamp = datetime.now(timezone.utc).isoformat()
+        self.ai_suggestion = ai_suggestion
+        self.human_decision = human_decision
+        self.human_feedback = human_feedback
+        self.carbon_kg = carbon_kg
+        self.power_kw = power_kw
+        self.iso_scope = iso_scope
+        self.iso_label = iso_label
+        self.previous_hash = previous_hash
+        self.extra = extra or {}
+        self.hash = self._compute_hash()
 
-        Returns
-        -------
-        Dict[str, Any]
-            The stored audit record with its hash.
-        """
-        prev_hash = self._records[-1]["record_hash"] if self._records else "GENESIS"
-
-        # ISO 14064 scope classification
-        scope_info = SCOPE_MAP.get(energy_source, SCOPE_MAP["electricity"])
-
-        carbon_kg = carbon_metrics.get("carbon_kg", 0.0)
-        energy_kwh = carbon_metrics.get("energy_kwh", 0.0)
-
-        record = {
-            "sequence_number": len(self._records) + 1,
-            "batch_id": batch_id,
-            "timestamp": time.time(),
-            "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "ai_suggestion": ai_suggestion,
-            "human_decision": human_decision,
-            "human_feedback": human_feedback,
-            "carbon_kg": round(carbon_kg, 4),
-            "energy_kwh": round(energy_kwh, 2),
-            "quality_delta": round(quality_delta, 6),
-            "qdrant_updated": qdrant_updated,
-            "iso_14064": {
-                "scope": scope_info["scope"],
-                "category": scope_info["category"],
-                "description": scope_info["description"],
-                "emission_factor": carbon_metrics.get("emission_factor", 0.82),
+    def _compute_hash(self) -> str:
+        """Compute SHA-256 hash of the record contents + previous hash."""
+        payload = json.dumps(
+            {
+                "index": self.index,
+                "batch_id": self.batch_id,
+                "timestamp": self.timestamp,
+                "ai_suggestion": self.ai_suggestion,
+                "human_decision": self.human_decision,
+                "carbon_kg": self.carbon_kg,
+                "power_kw": self.power_kw,
+                "previous_hash": self.previous_hash,
             },
-            "prev_hash": prev_hash,
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "index": self.index,
+            "batch_id": self.batch_id,
+            "timestamp": self.timestamp,
+            "ai_suggestion": self.ai_suggestion,
+            "human_decision": self.human_decision,
+            "human_feedback": self.human_feedback,
+            "carbon_kg": self.carbon_kg,
+            "power_kw": self.power_kw,
+            "iso_scope": self.iso_scope,
+            "iso_label": self.iso_label,
+            "hash": self.hash,
+            "previous_hash": self.previous_hash,
+            "extra": self.extra,
         }
 
-        record["record_hash"] = _compute_hash(record, prev_hash)
-        self._records.append(record)
-        self._save()
+
+class AuditLedger:
+    """Hash-chained immutable audit log with ISO 14064 scope support."""
+
+    def __init__(self):
+        self._chain: List[AuditRecord] = []
+
+    def append(
+        self,
+        batch_id: str,
+        ai_suggestion: Dict[str, Any],
+        human_decision: str,
+        human_feedback: str = "",
+        carbon_kg: float = 0.0,
+        power_kw: float = 0.0,
+        iso_scope: str = "Scope 2",
+        iso_label: str = "Purchased Electricity",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> AuditRecord:
+        """Append a new record to the hash chain."""
+        prev_hash = self._chain[-1].hash if self._chain else "GENESIS"
+        record = AuditRecord(
+            index=len(self._chain),
+            batch_id=batch_id,
+            ai_suggestion=ai_suggestion,
+            human_decision=human_decision,
+            human_feedback=human_feedback,
+            carbon_kg=carbon_kg,
+            power_kw=power_kw,
+            iso_scope=iso_scope,
+            iso_label=iso_label,
+            previous_hash=prev_hash,
+            extra=extra,
+        )
+        self._chain.append(record)
+        log.info(
+            "Audit record #%d appended (batch=%s, decision=%s, hash=%s...)",
+            record.index, batch_id, human_decision, record.hash[:12],
+        )
         return record
 
-    def get_all(self) -> List[Dict[str, Any]]:
-        """Return all audit records, newest first."""
-        return list(reversed(self._records))
-
     def verify_chain(self) -> Dict[str, Any]:
-        """Verify the integrity of the entire hash chain.
+        """Verify the integrity of the entire hash chain."""
+        if not self._chain:
+            return {"valid": True, "length": 0}
 
-        Returns
-        -------
-        Dict with 'valid', 'total_records', 'broken_at' keys.
+        for i, record in enumerate(self._chain):
+            expected_prev = self._chain[i - 1].hash if i > 0 else "GENESIS"
+            if record.previous_hash != expected_prev:
+                return {
+                    "valid": False,
+                    "broken_at": i,
+                    "length": len(self._chain),
+                    "error": f"Hash chain broken at index {i}",
+                }
+            recomputed = record._compute_hash()
+            if recomputed != record.hash:
+                return {
+                    "valid": False,
+                    "broken_at": i,
+                    "length": len(self._chain),
+                    "error": f"Record {i} hash mismatch (tampered?)",
+                }
+
+        return {"valid": True, "length": len(self._chain)}
+
+    def get_latest(self, n: int = 50) -> List[Dict[str, Any]]:
+        """Get the latest N records as dicts."""
+        return [r.to_dict() for r in self._chain[-n:]]
+
+    def get_iso_summary(self) -> Dict[str, float]:
+        """Get ISO 14064 carbon summary by scope."""
+        scope_totals = {"scope_1_kg": 0.0, "scope_2_kg": 0.0, "scope_3_kg": 0.0}
+        for record in self._chain:
+            if record.iso_scope == "Scope 1":
+                scope_totals["scope_1_kg"] += record.carbon_kg
+            elif record.iso_scope == "Scope 2":
+                scope_totals["scope_2_kg"] += record.carbon_kg
+            else:
+                scope_totals["scope_3_kg"] += record.carbon_kg
+        scope_totals["total_kg"] = sum(scope_totals.values())
+        return scope_totals
+
+    def export_audit_pdf(self, output_path: Optional[str] = None) -> str:
+        """Export the audit trail as a PDF or text report.
+
+        Uses fpdf2 if available, otherwise falls back to plain text.
         """
-        if not self._records:
-            return {"valid": True, "total_records": 0, "broken_at": None}
+        if output_path is None:
+            output_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "audit_report.pdf",
+            )
 
-        for i, record in enumerate(self._records):
-            expected_prev = self._records[i - 1]["record_hash"] if i > 0 else "GENESIS"
-            if record.get("prev_hash") != expected_prev:
-                return {"valid": False, "total_records": len(self._records), "broken_at": i}
-            expected_hash = _compute_hash(record, expected_prev)
-            if record.get("record_hash") != expected_hash:
-                return {"valid": False, "total_records": len(self._records), "broken_at": i}
+        try:
+            from fpdf import FPDF
 
-        return {"valid": True, "total_records": len(self._records), "broken_at": None}
+            pdf = FPDF()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            pdf.add_page()
+            pdf.set_font("Helvetica", "B", 16)
+            pdf.cell(0, 10, "Intelli-Credit AI - Audit Compliance Report", ln=True, align="C")
+            pdf.set_font("Helvetica", "", 10)
+            pdf.cell(0, 8, f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ln=True, align="C")
+            pdf.ln(5)
 
-    def get_iso_summary(self) -> Dict[str, Any]:
-        """Get ISO 14064 compliance summary grouped by scope."""
-        scope_totals: Dict[int, float] = {1: 0.0, 2: 0.0, 3: 0.0}
-        for r in self._records:
-            scope = r.get("iso_14064", {}).get("scope", 2)
-            scope_totals[scope] += r.get("carbon_kg", 0.0)
+            # ISO Summary
+            iso = self.get_iso_summary()
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, "ISO 14064 Carbon Summary", ln=True)
+            pdf.set_font("Helvetica", "", 10)
+            for label, val in iso.items():
+                pdf.cell(0, 6, f"  {label}: {val:.4f} kgCO2", ln=True)
+            pdf.ln(5)
 
-        total = sum(scope_totals.values())
-        return {
-            "total_carbon_kg": round(total, 4),
-            "scope_1_kg": round(scope_totals[1], 4),
-            "scope_2_kg": round(scope_totals[2], 4),
-            "scope_3_kg": round(scope_totals[3], 4),
-            "total_records": len(self._records),
-            "chain_integrity": self.verify_chain(),
-        }
+            # Chain integrity
+            integrity = self.verify_chain()
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, "Hash Chain Integrity", ln=True)
+            pdf.set_font("Helvetica", "", 10)
+            status = "VERIFIED" if integrity["valid"] else f"BROKEN at record {integrity.get('broken_at')}"
+            pdf.cell(0, 6, f"  Status: {status} ({integrity['length']} records)", ln=True)
+            pdf.ln(5)
 
-    def export_audit_text(self) -> str:
-        """Generate a plaintext audit report (fallback if fpdf2 not available)."""
-        lines = []
-        lines.append("=" * 70)
-        lines.append("ISO 14064 COMPLIANCE AUDIT REPORT")
-        lines.append(f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append("=" * 70)
+            # Records table
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, "Audit Records", ln=True)
+            pdf.set_font("Helvetica", "", 8)
 
-        summary = self.get_iso_summary()
-        lines.append(f"\nTotal Records: {summary['total_records']}")
-        lines.append(f"Chain Integrity: {'VALID' if summary['chain_integrity']['valid'] else 'BROKEN'}")
-        lines.append(f"\nTotal Carbon: {summary['total_carbon_kg']:.4f} kgCO₂")
-        lines.append(f"  Scope 1 (Direct): {summary['scope_1_kg']:.4f} kgCO₂")
-        lines.append(f"  Scope 2 (Electricity): {summary['scope_2_kg']:.4f} kgCO₂")
-        lines.append(f"  Scope 3 (Indirect): {summary['scope_3_kg']:.4f} kgCO₂")
+            for record in self._chain:
+                d = record.to_dict()
+                pdf.cell(0, 5, f"#{d['index']} | Batch: {d['batch_id']} | {d['timestamp'][:19]}", ln=True)
+                pdf.cell(0, 5, f"   Decision: {d['human_decision']} | Carbon: {d['carbon_kg']:.3f} kg | {d['iso_scope']}", ln=True)
+                pdf.cell(0, 5, f"   Hash: {d['hash'][:32]}...", ln=True)
+                if d["human_feedback"]:
+                    pdf.cell(0, 5, f"   Feedback: {d['human_feedback'][:80]}", ln=True)
+                pdf.ln(2)
 
-        lines.append(f"\n{'='*70}")
-        lines.append("DECISION LOG")
-        lines.append(f"{'='*70}\n")
+            pdf.output(output_path)
+            log.info("Audit PDF exported to: %s", output_path)
+            return output_path
 
-        for r in self._records:
-            lines.append(f"[#{r['sequence_number']}] Batch: {r['batch_id']}")
-            lines.append(f"  Time: {r['timestamp_iso']}")
-            lines.append(f"  Decision: {r['human_decision']}")
-            lines.append(f"  Carbon: {r['carbon_kg']:.4f} kgCO₂ | Energy: {r['energy_kwh']:.2f} kWh")
-            lines.append(f"  Quality Δ: {r['quality_delta']:+.6f}")
-            lines.append(f"  Hash: {r['record_hash'][:16]}...")
-            lines.append(f"  Prev:  {r['prev_hash'][:16]}...")
+        except ImportError:
+            # Fallback to text report
+            txt_path = output_path.replace(".pdf", ".txt")
+            lines = [
+                "=" * 60,
+                "INTELLI-CREDIT AI - AUDIT COMPLIANCE REPORT",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+                "=" * 60,
+                "",
+                "ISO 14064 Carbon Summary:",
+            ]
+            iso = self.get_iso_summary()
+            for label, val in iso.items():
+                lines.append(f"  {label}: {val:.4f} kgCO2")
+
             lines.append("")
+            integrity = self.verify_chain()
+            status = "VERIFIED" if integrity["valid"] else f"BROKEN at record {integrity.get('broken_at')}"
+            lines.append(f"Hash Chain: {status} ({integrity['length']} records)")
+            lines.append("")
+            lines.append("-" * 60)
 
-        return "\n".join(lines)
+            for record in self._chain:
+                d = record.to_dict()
+                lines.append(f"#{d['index']} | {d['batch_id']} | {d['timestamp'][:19]}")
+                lines.append(f"  Decision: {d['human_decision']} | Carbon: {d['carbon_kg']:.3f} kg | {d['iso_scope']}")
+                lines.append(f"  Hash: {d['hash'][:32]}...")
+                if d["human_feedback"]:
+                    lines.append(f"  Feedback: {d['human_feedback'][:80]}")
+                lines.append("")
+
+            with open(txt_path, "w") as f:
+                f.write("\n".join(lines))
+            log.info("Audit text report exported to: %s", txt_path)
+            return txt_path
