@@ -2,11 +2,8 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
-import Optimization from './pages/Optimization';
-import Explainability from './pages/Explainability';
-import Execution from './pages/Execution';
-import History from './pages/History';
-import SettingsPage from './pages/Settings';
+import DecisionCenter from './pages/DecisionCenter';
+import ComplianceAudit from './pages/ComplianceAudit';
 
 function App() {
   return (
@@ -14,11 +11,8 @@ function App() {
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
-          <Route path="optimization" element={<Optimization />} />
-          <Route path="explainability" element={<Explainability />} />
-          <Route path="execution" element={<Execution />} />
-          <Route path="history" element={<History />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route path="decision-center" element={<DecisionCenter />} />
+          <Route path="compliance" element={<ComplianceAudit />} />
           {/* Fallback route */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
