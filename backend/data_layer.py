@@ -197,7 +197,9 @@ def _auc_trapz(phase_df: pd.DataFrame, col: str) -> float:
     """
     if len(phase_df) < 2:
         return 0.0
-    return float(np.trapezoid(
+    # np.trapezoid is the NumPy 2.x name; fall back to np.trapz for older versions
+    _integrate = getattr(np, "trapezoid", np.trapz)
+    return float(_integrate(
         phase_df[col].values,
         phase_df["Time_Minutes"].values,
     ))

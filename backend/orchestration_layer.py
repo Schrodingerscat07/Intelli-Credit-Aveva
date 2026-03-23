@@ -73,6 +73,7 @@ from batch_history import BatchHistoryStore
 from energy_analyzer import EnergyPatternAnalyzer
 from decision_memory import DecisionMemory
 from audit_ledger import AuditLedger
+from gemini_llm import generate_ai_briefing, explain_outcome
 
 # -- PyTorch / sklearn --------------------------------------------------
 import torch
@@ -253,6 +254,52 @@ class ManufacturingState(BaseModel):
     retraining_alert: bool = Field(
         default=False,
         description="True if model drift detected (3+ consecutive OOB batches)",
+    )
+
+    # -- V2.0: SHAP Feature Importances --------------------------------
+    shap_values: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="XGBoost feature importances for explainability",
+    )
+
+    # -- V2.0: AI Briefing (plain English) ----------------------------
+    ai_briefing: str = Field(
+        default="",
+        description="Template-generated plain-English AI explanation",
+    )
+
+    # -- V2.0: Golden Signature Agent --------------------------------
+    golden_sig_proposal: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Proposed Golden Signature update (if performance exceeds baseline)",
+    )
+    golden_sig_explanation: str = Field(
+        default="",
+        description="Natural language explanation of proposed Golden Sig update",
+    )
+    projected_impact: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Projected energy/yield/carbon impact with confidence scores",
+    )
+
+    # -- V2.0: Carbon Agent ------------------------------------------
+    carbon_estimate: float = Field(
+        default=0.0,
+        description="Pre-execution estimated carbon (kgCO2) for this batch",
+    )
+    carbon_deviation: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Carbon deviation flags vs regulatory targets",
+    )
+    carbon_agent_alert: str = Field(
+        default="",
+        description="Carbon agent alert message if deviations detected",
+    )
+
+    # -- V2.0: Per-Agent Notifications for HITL ----------------------
+    agent_notifications: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Collected notifications from all agents for HITL review",
     )
 # =====================================================================
 # 2. VECTOR MEMORY  --  Qdrant Manager (Raw Numerical Vectors)
@@ -644,6 +691,34 @@ _current_priorities: Dict[str, Any] = {
     "mode": "yield_vs_energy",
 }
 
+# Priority mode definitions
+PRIORITY_MODES = {
+    "yield_vs_energy": {
+        "label": "Yield vs Energy",
+        "primary": "Tablet_Weight",
+        "secondary": "Power_Consumption_kW",
+        "description": "Balance tablet quality against power consumption",
+    },
+    "quality_vs_speed": {
+        "label": "Quality vs Speed",
+        "primary": "Tablet_Weight",
+        "secondary": "Machine_Speed",
+        "description": "Prioritize tablet precision vs production throughput",
+    },
+    "carbon_min": {
+        "label": "Carbon Minimize",
+        "primary": "Power_Consumption_kW",
+        "secondary": "Power_Consumption_kW",
+        "description": "Minimize carbon footprint above all else",
+    },
+    "balanced": {
+        "label": "Balanced",
+        "primary": "Tablet_Weight",
+        "secondary": "Power_Consumption_kW",
+        "description": "Equal weight to quality, energy, and throughput",
+    },
+}
+
 # -- Phase 2: Drift Detection counter --------------------------------
 _drift_counter: int = 0  # consecutive batches outside prediction interval
 
@@ -859,7 +934,307 @@ def proxy_caller_node(state: ManufacturingState) -> dict:
         except Exception as e:
             log.error("  Prediction/Novelty failed: %s", e)
 
+    # -- V2.0: SHAP Feature Importances --------------------------------
+    if _surrogate_model and _surrogate_model._is_fitted:
+        try:
+            shap_vals = _surrogate_model.get_feature_importances(top_n=10)
+            state_additions["shap_values"] = shap_vals
+            log.info("  [OK] Generated SHAP feature importances (%d features)", len(shap_vals))
+        except Exception as e:
+            log.error("  SHAP generation failed: %s", e)
+
+    # -- V2.0: Plain-English AI Briefing (Gemini LLM) ---------------------
+    try:
+        briefing = generate_ai_briefing(
+            proposed_settings=proposed,
+            shap_values=state_additions.get("shap_values", {}),
+            baseline_score=state.baseline_score,
+            prediction_intervals=state_additions.get("prediction_intervals", {}),
+            no_confident_match=bool(state_additions.get("no_confident_match", False)),
+            telemetry=state.current_telemetry,
+        )
+        state_additions["ai_briefing"] = briefing
+        log.info("  [OK] Generated AI briefing (Gemini LLM)")
+    except Exception as e:
+        log.error("  Briefing generation failed: %s", e)
+
     return _to_native(state_additions)
+
+
+def _generate_briefing(
+    proposed: Dict[str, Any],
+    shap_values: Dict[str, float],
+    baseline_score: float,
+    prediction_intervals: Dict[str, Any],
+    no_confident_match: bool,
+) -> str:
+    """Generate a plain-English AI briefing from SHAP + prediction data."""
+    parts = []
+
+    # Confidence sentence
+    conf_pct = baseline_score * 100
+    if conf_pct >= 90:
+        parts.append(f"I have high confidence ({conf_pct:.0f}% Qdrant match) in this recommendation.")
+    elif conf_pct >= 70:
+        parts.append(f"I have moderate confidence ({conf_pct:.0f}% match) - this batch is slightly different from our historical baselines.")
+    else:
+        parts.append(f"WARNING: Low confidence ({conf_pct:.0f}% match). This batch is significantly different from our training data. Please review carefully.")
+
+    # SHAP explanation - top 2 drivers
+    if shap_values:
+        sorted_shap = sorted(shap_values.items(), key=lambda x: abs(x[1]), reverse=True)[:2]
+        drivers = [f"{name.replace('_', ' ')} ({val*100:.1f}%)" for name, val in sorted_shap]
+        parts.append(f"The key factors driving this recommendation are: {' and '.join(drivers)}.")
+
+    # Proposed settings summary
+    if proposed:
+        key_settings = []
+        for var in ["Machine_Speed", "Compression_Force", "Drying_Temp"]:
+            if var in proposed:
+                key_settings.append(f"{var.replace('_', ' ')}: {proposed[var]:.1f}")
+        if key_settings:
+            parts.append(f"I am suggesting {', '.join(key_settings)}.")
+
+    # Prediction summary
+    if prediction_intervals:
+        tw = prediction_intervals.get("Tablet_Weight", {})
+        pw = prediction_intervals.get("Power_Consumption_kW", {})
+        if tw.get("predicted"):
+            parts.append(f"Expected yield: {tw['predicted']:.1f}g tablet weight.")
+        if pw.get("predicted"):
+            carbon_est = pw["predicted"] * 0.82 / 60
+            parts.append(f"Estimated carbon impact: {carbon_est:.3f} kgCO2 per batch.")
+
+    if no_confident_match:
+        parts.append("Note: No confident historical match was found. Consider manual verification before approving.")
+
+    return " ".join(parts)
+
+# --------------------------------------------------------------------─
+# GOLDEN SIGNATURE AGENT: Lifecycle Management
+# --------------------------------------------------------------------─
+@traceable(name="golden_signature_agent_node", run_type="chain")
+def golden_signature_agent_node(state: ManufacturingState) -> dict:
+    """Golden Signature Agent — manages signature lifecycle.
+
+    After the prediction agent generates proposed settings, this agent:
+    1. Compares proposed vs current golden signature baseline
+    2. If performance is expected to exceed baseline (predicted quality delta > 2%),
+       proposes an updated golden signature
+    3. Generates natural language explanation
+    4. Calculates projected impact (energy/yield/carbon) with confidence scores
+    """
+    log.info("=" * 60)
+    log.info("GOLDEN SIGNATURE AGENT: Analyzing signature lifecycle")
+
+    notifications = list(state.agent_notifications)  # copy existing
+
+    # -- Prediction Agent notification (already generated in proxy_caller) --
+    notifications.append({
+        "agent": "Prediction Agent",
+        "icon": "🔮",
+        "message": state.ai_briefing or "Prediction complete. See proposed settings above.",
+        "severity": "info",
+    })
+
+    # -- Check if we should propose a signature update --
+    proposed = state.proposed_settings
+    golden = state.golden_signature or {}
+    pred_intervals = state.prediction_intervals
+    baseline_score = state.baseline_score
+
+    proposal = {}
+    explanation = ""
+    projected = {}
+
+    if proposed and golden and pred_intervals:
+        # Compare predicted outcomes vs golden signature targets
+        tw_pred = pred_intervals.get("Tablet_Weight", {}).get("predicted", 0)
+        pw_pred = pred_intervals.get("Power_Consumption_kW", {}).get("predicted", 0)
+        gs_tw = golden.get("Tablet_Weight", tw_pred)
+        gs_pw = golden.get("Power_Consumption_kW", pw_pred)
+
+        # Calculate improvement deltas
+        weight_delta = abs(tw_pred - 330.0) - abs(gs_tw - 330.0)  # 330g is ideal
+        energy_delta = gs_pw - pw_pred  # positive = lower energy = better
+        carbon_delta = energy_delta * 0.82 / 60  # kgCO2 improvement
+
+        # Decision: propose update if improvement > 2% on any metric
+        weight_improvement_pct = abs(weight_delta / max(gs_tw, 1.0)) * 100
+        energy_improvement_pct = abs(energy_delta / max(gs_pw, 1.0)) * 100
+
+        should_propose = (
+            (weight_delta < 0 and weight_improvement_pct > 2.0) or  # closer to ideal
+            (energy_delta > 0 and energy_improvement_pct > 2.0)  # lower energy
+        )
+
+        if should_propose and baseline_score > 0.7:
+            proposal = {
+                "proposed_settings": proposed,
+                "reason": "performance_exceeds_baseline",
+                "weight_delta": round(weight_delta, 4),
+                "energy_delta": round(energy_delta, 4),
+                "confidence": round(baseline_score, 3),
+            }
+
+            projected = {
+                "energy_savings_kw": round(max(energy_delta, 0), 3),
+                "yield_improvement_pct": round(max(-weight_delta / max(gs_tw, 1) * 100, 0), 2),
+                "carbon_reduction_kg": round(max(carbon_delta, 0), 5),
+                "confidence_score": round(baseline_score, 3),
+            }
+
+            explanation = (
+                f"Performance analysis shows this batch configuration may improve upon "
+                f"the current golden signature. "
+            )
+            if energy_delta > 0:
+                explanation += f"Projected energy savings: {energy_delta:.2f} kW ({energy_improvement_pct:.1f}% reduction). "
+            if weight_delta < 0:
+                explanation += f"Tablet weight closer to ideal by {abs(weight_delta):.2f}g. "
+            explanation += (
+                f"Carbon reduction: {max(carbon_delta, 0):.4f} kgCO2/batch. "
+                f"Confidence: {baseline_score*100:.0f}%. "
+                f"Recommending signature update for operator review."
+            )
+
+            notifications.append({
+                "agent": "Golden Signature Agent",
+                "icon": "⭐",
+                "message": explanation,
+                "severity": "proposal",
+                "action_required": True,
+            })
+
+            log.info("  [PROPOSAL] Golden Signature update proposed")
+            log.info("    Energy delta: %.3f kW, Weight delta: %.3f g", energy_delta, weight_delta)
+        else:
+            explanation = "Current golden signature remains optimal for this batch profile."
+            notifications.append({
+                "agent": "Golden Signature Agent",
+                "icon": "⭐",
+                "message": explanation,
+                "severity": "info",
+            })
+            log.info("  [OK] No signature update needed")
+    else:
+        notifications.append({
+            "agent": "Golden Signature Agent",
+            "icon": "⭐",
+            "message": "Awaiting prediction data to evaluate signature lifecycle.",
+            "severity": "info",
+        })
+
+    return _to_native({
+        "golden_sig_proposal": proposal,
+        "golden_sig_explanation": explanation,
+        "projected_impact": projected,
+        "agent_notifications": notifications,
+    })
+
+
+# --------------------------------------------------------------------─
+# CARBON AGENT: Emissions Tracking & Deviation Flagging
+# --------------------------------------------------------------------─
+@traceable(name="carbon_agent_node", run_type="chain")
+def carbon_agent_node(state: ManufacturingState) -> dict:
+    """Carbon Agent — tracks batch-level emissions and flags regulatory deviations.
+
+    This agent:
+    1. Estimates batch carbon from predicted power consumption
+    2. Compares against regulatory targets (max carbon per batch, emission factor)
+    3. Flags deviations with severity levels
+    4. Adds notifications for the HITL gate
+    """
+    log.info("=" * 60)
+    log.info("CARBON AGENT: Estimating emissions and checking compliance")
+
+    notifications = list(state.agent_notifications)  # copy
+
+    pred_intervals = state.prediction_intervals
+    pw_data = pred_intervals.get("Power_Consumption_kW", {})
+    pw_predicted = pw_data.get("predicted", 0.0)
+
+    # Regulatory targets
+    targets = _regulatory_targets
+    emission_factor = targets.get("emission_factor", 0.82)  # kgCO2/kWh
+    max_carbon = targets.get("max_carbon_per_batch_kg", 25.0)
+    max_power = targets.get("max_power_per_batch_kwh", 50.0)
+
+    # Estimate carbon (power in kW * emission factor / 60 minutes)
+    carbon_est = pw_predicted * emission_factor / 60 if pw_predicted > 0 else 0.0
+    power_est = pw_predicted
+
+    # Check deviations
+    deviations = []
+    severity = "info"
+
+    if carbon_est > max_carbon:
+        pct_over = ((carbon_est - max_carbon) / max_carbon) * 100
+        deviations.append({
+            "type": "carbon_exceeded",
+            "message": f"Estimated carbon {carbon_est:.3f} kgCO2 exceeds limit of {max_carbon} kgCO2 ({pct_over:.1f}% over)",
+            "value": round(carbon_est, 4),
+            "limit": max_carbon,
+            "severity": "critical" if pct_over > 20 else "warning",
+        })
+        severity = "critical" if pct_over > 20 else "warning"
+
+    if power_est > max_power:
+        pct_over = ((power_est - max_power) / max_power) * 100
+        deviations.append({
+            "type": "power_exceeded",
+            "message": f"Estimated power {power_est:.1f} kWh exceeds limit of {max_power} kWh ({pct_over:.1f}% over)",
+            "value": round(power_est, 2),
+            "limit": max_power,
+            "severity": "warning",
+        })
+        if severity == "info":
+            severity = "warning"
+
+    carbon_deviation = {
+        "has_deviations": len(deviations) > 0,
+        "deviations": deviations,
+        "carbon_estimate_kg": round(carbon_est, 5),
+        "power_estimate_kw": round(power_est, 2),
+        "emission_factor": emission_factor,
+        "regulatory_limit_kg": max_carbon,
+    }
+
+    if deviations:
+        alert_msg = "⚠️ Carbon compliance issues detected:\n"
+        for d in deviations:
+            alert_msg += f"• {d['message']}\n"
+        alert_msg += f"Consider adjusting Machine Speed or Compression Force to reduce power consumption."
+
+        notifications.append({
+            "agent": "Carbon Agent",
+            "icon": "🌱",
+            "message": alert_msg,
+            "severity": severity,
+            "action_required": True,
+        })
+        log.info("  [WARNING] Carbon deviations detected: %d issues", len(deviations))
+    else:
+        compliance_msg = (
+            f"Carbon estimate: {carbon_est:.4f} kgCO2 — within regulatory limit "
+            f"({max_carbon} kgCO2). Power: {power_est:.1f} kW. "
+            f"Emission factor: {emission_factor} kgCO2/kWh."
+        )
+        notifications.append({
+            "agent": "Carbon Agent",
+            "icon": "🌱",
+            "message": compliance_msg,
+            "severity": "info",
+        })
+        log.info("  [OK] Carbon within limits: %.4f kgCO2", carbon_est)
+
+    return _to_native({
+        "carbon_estimate": carbon_est,
+        "carbon_deviation": carbon_deviation,
+        "carbon_agent_alert": alert_msg if deviations else "",
+        "agent_notifications": notifications,
+    })
 
 
 # --------------------------------------------------------------------─
@@ -902,6 +1277,9 @@ def hitl_gate_node(state: ManufacturingState) -> dict:
         "proposed_settings": state.proposed_settings,
         "baseline_score": state.baseline_score,
         "past_decision_warnings": decision_warnings,
+        "agent_notifications": state.agent_notifications,
+        "golden_sig_proposal": state.golden_sig_proposal,
+        "carbon_deviation": state.carbon_deviation,
         "instructions": (
             "POST /api/approve with {'approved': true} to proceed, "
             "or {'approved': false, 'feedback': '...'} to reject."
@@ -1081,17 +1459,21 @@ def execution_node(state: ManufacturingState) -> dict:
         energy_anomalies=state.energy_anomalies,
     )
 
-    # -- Audit Ledger: hash-chained immutable log -------------------
-    _audit_ledger.log_decision(
-        batch_id=state.batch_id,
-        ai_suggestion=state.proposed_settings,
-        human_decision="approved",
-        human_feedback=state.human_feedback,
-        carbon_metrics=carbon_result,
-        quality_delta=float(quality_delta),
-        qdrant_updated=qdrant_updated,
-    )
-    log.info("  Audit ledger updated (hash-chained)")
+    # -- V2.0: Hash-chained Audit Ledger ----------------------------─
+    if _audit_ledger:
+        try:
+            _audit_ledger.append(
+                batch_id=state.batch_id,
+                ai_suggestion=state.proposed_settings,
+                human_decision="approved",
+                human_feedback=state.human_feedback,
+                carbon_kg=carbon_result.get("carbon_kg", 0.0),
+                power_kw=power_kw,
+                extra={"quality_delta": float(quality_delta), "qdrant_updated": qdrant_updated},
+            )
+            log.info("  [OK] Audit ledger updated (hash-chained)")
+        except Exception as e:
+            log.error("  Audit ledger failed: %s", e)
 
     return _to_native({
         "execution_status": exec_status,
@@ -1132,13 +1514,17 @@ def build_orchestration_graph() -> StateGraph:
     # -- Add nodes --------------------------------------------------─
     graph.add_node("data_router", data_router_node)
     graph.add_node("proxy_caller", proxy_caller_node)
+    graph.add_node("golden_sig_agent", golden_signature_agent_node)
+    graph.add_node("carbon_agent", carbon_agent_node)
     graph.add_node("hitl_gate", hitl_gate_node)
     graph.add_node("execution_node", execution_node)
 
     # -- Add edges --------------------------------------------------─
     graph.add_edge(START, "data_router")
     graph.add_edge("data_router", "proxy_caller")
-    graph.add_edge("proxy_caller", "hitl_gate")
+    graph.add_edge("proxy_caller", "golden_sig_agent")
+    graph.add_edge("golden_sig_agent", "carbon_agent")
+    graph.add_edge("carbon_agent", "hitl_gate")
     graph.add_conditional_edges("hitl_gate", should_execute)
     graph.add_edge("execution_node", END)
 

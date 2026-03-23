@@ -19,6 +19,7 @@ from orchestration_layer import (
     _surrogate_model,
     _current_priorities,
     _regulatory_targets,
+    _audit_ledger,
 )
 from langgraph.types import Command
 
@@ -233,16 +234,36 @@ async def new_batch(background_tasks: BackgroundTasks):
 # NEW ENDPOINTS
 # =====================================================================
 
+@app.get("/api/priority_modes")
+async def get_priority_modes():
+    """Get available priority balancing modes."""
+    from orchestration_layer import PRIORITY_MODES, _current_priorities
+    return {
+        "modes": PRIORITY_MODES,
+        "current": _current_priorities,
+    }
+
+
 @app.post("/api/update_priorities")
 async def update_priorities(payload: PriorityPayload):
     """Update optimization priorities from the frontend slider / dropdown."""
-    from orchestration_layer import _current_priorities as priorities
+    from orchestration_layer import _current_priorities as priorities, PRIORITY_MODES
     priorities["priority_value"] = payload.priority_value
     priorities["mode"] = payload.priority_type
-    priorities["objective_primary"] = payload.objective_primary
-    priorities["objective_secondary"] = payload.objective_secondary
+
+    # Auto-set objectives based on mode
+    mode_config = PRIORITY_MODES.get(payload.priority_type, {})
+    if mode_config:
+        priorities["objective_primary"] = mode_config.get("primary", priorities["objective_primary"])
+        priorities["objective_secondary"] = mode_config.get("secondary", priorities["objective_secondary"])
+
+    if payload.objective_primary:
+        priorities["objective_primary"] = payload.objective_primary
+    if payload.objective_secondary:
+        priorities["objective_secondary"] = payload.objective_secondary
+
     print(f"🎚️ Priority updated: {payload.priority_type} = {payload.priority_value} "
-          f"({payload.objective_primary} vs {payload.objective_secondary})")
+          f"({priorities['objective_primary']} vs {priorities['objective_secondary']})")
     return {
         "status": "success",
         "priorities": priorities,
@@ -272,48 +293,299 @@ async def get_batch_history():
 
 
 
+class ChatPayload(BaseModel):
+    """Payload for LLM-based operator chat."""
+    message: str
+    batch_id: Optional[str] = None
+
+
+@app.post("/api/chat")
+async def operator_chat(payload: ChatPayload):
+    """LLM-powered natural language interface for the operator.
+    
+    The operator types a message like 'Looks good, approve it' or
+    'What if we increase the speed?'. Gemini interprets the intent
+    and returns a structured response with action + explanation.
+    """
+    from gemini_llm import process_operator_message
+    
+    bid = payload.batch_id or latest_batch_id
+    state_data = {}
+    if bid:
+        config = {"configurable": {"thread_id": bid}}
+        state_snapshot = compiled_graph.get_state(config)
+        if state_snapshot:
+            state_data = state_snapshot.values
+
+    result = process_operator_message(payload.message, state_data)
+    
+    # If the LLM determined this is an approve/reject, auto-execute the HITL decision
+    if result.get("approved") is not None and bid:
+        config = {"configurable": {"thread_id": bid}}
+        state_snapshot = compiled_graph.get_state(config)
+        if state_snapshot and state_snapshot.next:
+            try:
+                for _ in compiled_graph.stream(
+                    Command(resume={"approved": result["approved"], "feedback": result.get("feedback", payload.message)}),
+                    config,
+                    stream_mode="values"
+                ):
+                    pass
+                result["execution_resumed"] = True
+                
+                # If approved and execution complete, get outcome explanation
+                if result["approved"]:
+                    from gemini_llm import explain_outcome
+                    new_state = compiled_graph.get_state(config)
+                    if new_state:
+                        sv = new_state.values
+                        outcome = sv.get("simulated_outcome", {})
+                        carbon = sv.get("carbon_metrics", {}).get("carbon_kg", 0.0)
+                        qd = sv.get("quality_delta", 0.0)
+                        explanation = explain_outcome(bid, outcome, qd, carbon)
+                        result["response"] += f"\n\n{explanation}"
+            except Exception as e:
+                result["execution_error"] = str(e)
+    
+    return result
+
+
+@app.post("/api/hitl_decision")
+async def hitl_decision(payload: DecisionPayload):
+    """Resume the graph with the human decision (button-based or from chat)."""
+    config = {"configurable": {"thread_id": payload.batch_id}}
+    state_snapshot = compiled_graph.get_state(config)
+
+    if not state_snapshot or not state_snapshot.next:
+        raise HTTPException(status_code=400, detail="Graph is not currently paused awaiting HITL.")
+
+    # If rejected, also log to audit ledger
+    if not payload.approved:
+        from orchestration_layer import _audit_ledger, _decision_memory
+        if _audit_ledger:
+            _audit_ledger.append(
+                batch_id=payload.batch_id,
+                ai_suggestion=state_snapshot.values.get("proposed_settings", {}),
+                human_decision="rejected",
+                human_feedback=payload.feedback or "",
+                carbon_kg=0.0,
+                power_kw=0.0,
+            )
+        if _decision_memory:
+            _decision_memory.log_decision(
+                batch_id=payload.batch_id,
+                proposed_settings=state_snapshot.values.get("proposed_settings", {}),
+                approved=False,
+                feedback=payload.feedback or "",
+                quality_delta=0.0,
+            )
+
+    for _ in compiled_graph.stream(
+        Command(resume={"approved": payload.approved, "feedback": payload.feedback}),
+        config,
+        stream_mode="values"
+    ):
+        pass
+
+    return {"status": "resumed", "approved": payload.approved}
+
+
+
+
+class WhatIfPayload(BaseModel):
+    """Payload for Digital Twin what-if simulation."""
+    settings: Dict[str, float]
+    batch_id: Optional[str] = None
+
+
 @app.get("/api/feature_importance")
 async def get_feature_importance(top_n: int = 15):
-    """Get real feature importances from the XGBoost surrogate model."""
+    """Get model-level XGBoost feature importances (gain-based)."""
     from orchestration_layer import _surrogate_model
-    if _surrogate_model is None:
+    if _surrogate_model is None or not _surrogate_model._is_fitted:
         return {"features": {}, "message": "Surrogate model not available"}
     importances = _surrogate_model.get_feature_importances(top_n=top_n)
     return {"features": importances}
 
 
-@app.get("/api/energy_anomalies")
-async def get_energy_anomalies(batch_id: str = "LATEST_KNOWN"):
-    """Get energy pattern anomalies for a specific batch."""
+@app.get("/api/shap_values")
+async def get_shap_values(batch_id: Optional[str] = None):
+    """Get instance-level SHAP values for the current batch prediction.
+
+    Uses shap.TreeExplainer on each per-target XGBoost model to compute
+    how each feature pushed the prediction UP or DOWN from the base value.
+    """
+    from orchestration_layer import _surrogate_model
+    import numpy as np
+
+    if _surrogate_model is None or not _surrogate_model._is_fitted:
+        return {"targets": {}, "message": "Surrogate model not available"}
+
+    bid = batch_id or latest_batch_id
+    if not bid:
+        return {"targets": {}, "message": "No active batch"}
+
+    config = {"configurable": {"thread_id": bid}}
+    state_snapshot = compiled_graph.get_state(config)
+    if not state_snapshot:
+        return {"targets": {}, "message": "No state found"}
+
+    sv = state_snapshot.values
+    proposed = sv.get("proposed_settings", {})
+    telemetry = sv.get("current_telemetry", {})
+
+    # Build the input vector for the surrogate model
+    feature_names = _surrogate_model.feature_names
+    combined = {**telemetry, **proposed}
+    input_vec = []
+    for f in feature_names:
+        input_vec.append(combined.get(f, 0.0))
+    X = np.array([input_vec])
+
+    try:
+        import shap
+
+        result = {}
+        model = _surrogate_model.model  # MultiOutputRegressor
+
+        for i, target_name in enumerate(_surrogate_model.target_names):
+            estimator = model.estimators_[i]
+            explainer = shap.TreeExplainer(estimator)
+            shap_vals = explainer.shap_values(X)
+            base_value = float(explainer.expected_value)
+
+            # Get top features by absolute SHAP value
+            sv_flat = shap_vals[0]
+            feature_shap = list(zip(feature_names, sv_flat.tolist()))
+            feature_shap.sort(key=lambda x: abs(x[1]), reverse=True)
+            top_features = feature_shap[:15]
+
+            result[target_name] = {
+                "base_value": round(base_value, 4),
+                "predicted": round(base_value + float(sv_flat.sum()), 4),
+                "features": [
+                    {
+                        "name": name,
+                        "shap_value": round(val, 6),
+                        "feature_value": round(combined.get(name, 0.0), 4) if isinstance(combined.get(name, 0.0), (int, float)) else 0.0,
+                        "direction": "positive" if val > 0 else "negative",
+                    }
+                    for name, val in top_features
+                ],
+            }
+
+        return {"targets": result}
+
+    except ImportError:
+        return {"targets": {}, "message": "shap package not installed"}
+    except Exception as e:
+        return {"targets": {}, "message": f"SHAP computation failed: {str(e)}"}
+
+
+@app.post("/api/what_if")
+async def what_if_simulation(payload: WhatIfPayload):
+    """Digital Twin: predict outcomes for user-modified decision variable settings."""
+    from orchestration_layer import _surrogate_model
+    import numpy as np
+
+    if _surrogate_model is None or not _surrogate_model._is_fitted:
+        return {"error": "Surrogate model not available"}
+
+    # Get the current batch state for context features
+    bid = payload.batch_id or latest_batch_id
+    if not bid:
+        return {"error": "No active batch"}
+
+    config = {"configurable": {"thread_id": bid}}
+    state_snapshot = compiled_graph.get_state(config)
+    if not state_snapshot:
+        return {"error": "Batch state not found"}
+
+    state_vals = state_snapshot.values
+    telemetry = state_vals.get("current_telemetry", {})
+
+    # Build full feature vector from telemetry + user's what-if settings
+    feat_vals = []
+    from offline_optimizer import DECISION_VARS
+    for fname in _surrogate_model.feature_names:
+        if fname in payload.settings:
+            feat_vals.append(float(payload.settings[fname]))
+        elif fname in DECISION_VARS and fname in state_vals.get("proposed_settings", {}):
+            feat_vals.append(float(state_vals["proposed_settings"][fname]))
+        elif fname in telemetry:
+            feat_vals.append(float(telemetry[fname]))
+        else:
+            feat_vals.append(0.0)
+
+    X = np.array([feat_vals], dtype=np.float64)
+    uq = _surrogate_model.predict_with_uncertainty(X)
+
+    predictions = {}
+    for i, target in enumerate(_surrogate_model.target_names):
+        predictions[target] = {
+            "predicted": float(uq["mean"][0][i]),
+            "lower_10": float(uq["lower"][0][i]),
+            "upper_90": float(uq["upper"][0][i]),
+        }
+
+    # Carbon estimate from predicted power
+    power_pred = predictions.get("Power_Consumption_kW", {}).get("predicted", 20.0)
+    predictions["carbon_estimate_kg"] = round(power_pred * 0.82 / 60, 4)
+
+    return {"predictions": predictions, "settings_used": payload.settings}
+
+
+@app.get("/api/briefing")
+async def get_ai_briefing(batch_id: str = "LATEST_KNOWN"):
+    """Get plain-English AI explanation of the current batch recommendation."""
     global latest_batch_id
     if batch_id == "LATEST_KNOWN":
         if not latest_batch_id:
-            return {"anomalies": [], "asset_health_score": 100.0}
+            return {"briefing": "No active batch. Click 'Run New Batch' on the Dashboard to start."}
         batch_id = latest_batch_id
 
     config = {"configurable": {"thread_id": batch_id}}
     state_snapshot = compiled_graph.get_state(config)
     if not state_snapshot:
-        return {"anomalies": [], "asset_health_score": 100.0}
+        return {"briefing": "Batch state not found."}
 
     state_vals = state_snapshot.values
+    briefing = state_vals.get("ai_briefing", "AI briefing not yet generated for this batch.")
     return {
-        "anomalies": state_vals.get("energy_anomalies", []),
-        "asset_health_score": state_vals.get("asset_health_score", 100.0),
-        "recommendations": state_vals.get("energy_recommendations", []),
+        "briefing": briefing,
+        "batch_id": batch_id,
+        "shap_values": state_vals.get("shap_values", {}),
     }
 
 
-@app.get("/api/decision_history")
-async def get_decision_history():
-    """Get all operator HITL decisions."""
-    from orchestration_layer import _decision_memory
-    if _decision_memory is None:
-        return {"decisions": [], "stats": {}}
+@app.get("/api/audit_trail")
+async def get_audit_trail(last_n: int = 50):
+    """Get the hash-chained immutable audit ledger."""
+    from orchestration_layer import _audit_ledger
+    if _audit_ledger is None:
+        return {"records": [], "integrity": {"valid": True, "length": 0}, "iso_summary": {}}
     return {
-        "decisions": _decision_memory.get_all_decisions(),
-        "stats": _decision_memory.get_stats(),
+        "records": _audit_ledger.get_latest(last_n),
+        "integrity": _audit_ledger.verify_chain(),
+        "iso_summary": _audit_ledger.get_iso_summary(),
     }
+
+
+@app.get("/api/audit_pdf")
+async def download_audit_pdf():
+    """Generate and return the PDF audit compliance report."""
+    from orchestration_layer import _audit_ledger
+    from fastapi.responses import FileResponse
+    if _audit_ledger is None:
+        raise HTTPException(status_code=500, detail="Audit ledger not initialized")
+
+    output_path = _audit_ledger.export_audit_pdf()
+    # Determine content type based on extension
+    if output_path.endswith(".pdf"):
+        return FileResponse(output_path, media_type="application/pdf", filename="audit_report.pdf")
+    else:
+        return FileResponse(output_path, media_type="text/plain", filename="audit_report.txt")
+
 
 
 @app.get("/api/regulatory_targets")
