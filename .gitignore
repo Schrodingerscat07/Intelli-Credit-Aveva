@@ -25,3 +25,16 @@ Thumbs.db
 
 # Gemini agent artifacts
 .gemini/
+
+# Personal / local-only files (not part of the project)
+Abhilash_Resume_Final (1).pdf
+Shiva-resume.pdf
+OR-4.0-gpt-min.pdf
+OR-deepseek.pdf
+OR-llama.pdf
+OR_claude-sonnet-3.5.pdf
+exisitng-gemini.pdf
+placement.cell.webscraper.pdf
+Political Ideology-ICAC2N2025_Paper_ID (7).docx
+wallpaper60.jpg
+startup_strategy/
