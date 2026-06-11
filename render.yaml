@@ -1,0 +1,45 @@
+# Render Blueprint for Intelli-Credit-Aveva
+# Deploys the FastAPI backend (web service) and the React/Vite frontend
+# (static site) together. See DEPLOY.md for the step-by-step guide.
+services:
+  # ----------------------------------------------------------------------
+  # Backend - FastAPI + PyTorch + LangGraph + Qdrant (in-memory, stateful)
+  # ----------------------------------------------------------------------
+  - type: web
+    name: intelli-credit-backend
+    runtime: python
+    rootDir: backend
+    plan: free   # NOTE: PyTorch + this workload may need 'starter' (more RAM)
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api_gateway:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # Set this to your frontend URL after the static site deploys,
+      # e.g. https://intelli-credit-frontend.onrender.com
+      - key: FRONTEND_ORIGIN
+        sync: false
+      # Your Google Gemini API key (optional - falls back to templates)
+      - key: GEMINI_API_KEY
+        sync: false
+
+  # ----------------------------------------------------------------------
+  # Frontend - React + Vite static build
+  # ----------------------------------------------------------------------
+  - type: web
+    name: intelli-credit-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      # Set this to your backend URL after the backend deploys,
+      # e.g. https://intelli-credit-backend.onrender.com
+      - key: VITE_API_URL
+        sync: false
+    routes:
+      # SPA fallback so React Router client-side routes resolve correctly
+      - type: rewrite
+        source: /*
+        destination: /index.html
