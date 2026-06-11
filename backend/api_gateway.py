@@ -25,10 +25,20 @@ from langgraph.types import Command
 
 app = FastAPI(title="Industrial AI Optimizer API")
 
-# Allow local Vite server
+# Allowed origins: local Vite dev server by default. In production, set the
+# FRONTEND_ORIGIN env var to your deployed frontend URL (comma-separated for
+# multiple). Setting it to "*" allows any origin.
+_default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_env_origins = os.getenv("FRONTEND_ORIGIN", "")
+_allowed_origins = (
+    [o.strip() for o in _env_origins.split(",") if o.strip()]
+    if _env_origins
+    else _default_origins
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
