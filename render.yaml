@@ -9,10 +9,12 @@ services:
     name: intelli-credit-backend
     runtime: python
     rootDir: backend
-    plan: free   # NOTE: PyTorch + this workload may need 'starter' (more RAM)
-    buildCommand: pip install -r requirements.txt
+    plan: free   # NOTE: PyTorch + this workload may need more RAM; see HF Spaces fallback
+    # Install the CPU-only build of torch first (Render has no GPU) so pip does
+    # not pull the ~2GB CUDA wheels, then install the rest.
+    buildCommand: pip install --upgrade pip && pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
     startCommand: uvicorn api_gateway:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /docs
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9

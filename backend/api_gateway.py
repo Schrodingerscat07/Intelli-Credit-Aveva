@@ -1,9 +1,11 @@
 import os
 import random
 import uuid
+import threading
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 
@@ -49,6 +51,12 @@ compiled_graph = None
 checkpointer = None
 latest_batch_id = None
 
+# Readiness flags. Heavy initialization (PyTorch proxy, Qdrant, graph compile)
+# runs in a background thread so the HTTP server can bind its port immediately
+# and pass platform health checks instead of timing out during startup.
+_initialized = False
+_init_error: Optional[str] = None
+
 class TelemetryPayload(BaseModel):
     batch_id: str
     telemetry: Dict[str, float]
@@ -74,13 +82,60 @@ class RegulatoryPayload(BaseModel):
     emission_factor_name: Optional[str] = None
 
 
+def _initialize_backend():
+    """Heavy one-time initialization. Runs in a background thread so it never
+    blocks the event loop / port binding during server startup."""
+    global compiled_graph, checkpointer, _initialized, _init_error
+    try:
+        print("🚀 Initializing backend subsystems (PyTorch Proxy, Qdrant)...")
+        initialize_system(max_signatures=100)
+        compiled_graph, checkpointer = compile_graph()
+        _initialized = True
+        print("✅ Backend initialized and graph compiled.")
+    except Exception as e:  # noqa: BLE001 - surface any init failure via /healthz
+        _init_error = str(e)
+        print(f"❌ Backend initialization failed: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
-    global compiled_graph, checkpointer
-    print("🚀 Initializing backend subsystems (PyTorch Proxy, Qdrant)...")
-    initialize_system(max_signatures=100)
-    compiled_graph, checkpointer = compile_graph()
-    print("✅ Backend initialized and graph compiled.")
+    # Spawn init in the background and return immediately so Uvicorn can bind
+    # the port right away (prevents Render/HF health-check timeouts).
+    threading.Thread(target=_initialize_backend, daemon=True).start()
+
+
+@app.middleware("http")
+async def readiness_gate(request: Request, call_next):
+    """Return 503 for API calls until background initialization completes.
+    Health/docs routes stay available immediately so the platform marks the
+    service healthy as soon as the port is open."""
+    path = request.url.path
+    if path.startswith("/api") and not _initialized:
+        # Manually echo CORS headers since this short-circuits before the
+        # CORS middleware runs (otherwise the browser hides the 503 body).
+        origin = request.headers.get("origin")
+        headers = {}
+        if origin and (origin in _allowed_origins or "*" in _allowed_origins):
+            headers["Access-Control-Allow-Origin"] = origin
+        if _init_error:
+            return JSONResponse(
+                status_code=500,
+                content={"status": "init_failed", "detail": _init_error},
+                headers=headers,
+            )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "initializing",
+                     "message": "Backend is warming up (loading models), retry shortly."},
+            headers=headers,
+        )
+    return await call_next(request)
+
+
+@app.get("/healthz")
+async def healthz():
+    """Lightweight health check - returns 200 as soon as the server is up."""
+    return {"status": "ok", "initialized": _initialized, "init_error": _init_error}
 
 def run_graph_background(batch_id: str, telemetry: Dict[str, float]):
     """Runs the graph in a background task so the API doesn't block while the proxy runs."""
